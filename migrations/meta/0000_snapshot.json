@@ -1,0 +1,190 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "a8a6f391-96a0-491a-b06d-b171f13924ba",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "tables": {
+    "groups": {
+      "name": "groups",
+      "columns": {
+        "group_id": {
+          "name": "group_id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload": {
+          "name": "payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "sessions": {
+      "name": "sessions",
+      "columns": {
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "effect_lease_until": {
+          "name": "effect_lease_until",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cleanup_lease_until": {
+          "name": "cleanup_lease_until",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cleanup_retry_at": {
+          "name": "cleanup_retry_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "message_deleted_at": {
+          "name": "message_deleted_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "request_date": {
+          "name": "request_date",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload": {
+          "name": "payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_sessions_group_request_date": {
+          "name": "idx_sessions_group_request_date",
+          "columns": ["group_id", "request_date"],
+          "isUnique": false
+        },
+        "idx_sessions_user_request_date": {
+          "name": "idx_sessions_user_request_date",
+          "columns": ["user_id", "request_date"],
+          "isUnique": false
+        },
+        "idx_sessions_active_expiry": {
+          "name": "idx_sessions_active_expiry",
+          "columns": ["expires_at", "request_date"],
+          "isUnique": false,
+          "where": "\"sessions\".\"status\" in ('active', 'awaiting_rules')"
+        },
+        "idx_sessions_pending_effect_due": {
+          "name": "idx_sessions_pending_effect_due",
+          "columns": ["coalesce(effect_lease_until, 0)", "request_date"],
+          "isUnique": false,
+          "where": "\"sessions\".\"status\" in ('approve_pending', 'decline_pending')"
+        },
+        "idx_sessions_cleanup_due": {
+          "name": "idx_sessions_cleanup_due",
+          "columns": [
+            "max(expires_at, coalesce(cleanup_retry_at, 0), coalesce(cleanup_lease_until, 0))",
+            "request_date"
+          ],
+          "isUnique": false,
+          "where": "\"sessions\".\"message_id\" is not null and \"sessions\".\"message_deleted_at\" is null and \"sessions\".\"status\" in ('approved', 'declined')"
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {
+      "idx_sessions_pending_effect_due": {
+        "columns": {
+          "coalesce(effect_lease_until, 0)": {
+            "isExpression": true
+          }
+        }
+      },
+      "idx_sessions_cleanup_due": {
+        "columns": {
+          "max(expires_at, coalesce(cleanup_retry_at, 0), coalesce(cleanup_lease_until, 0))": {
+            "isExpression": true
+          }
+        }
+      }
+    }
+  }
+}

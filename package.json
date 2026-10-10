@@ -1,0 +1,47 @@
+{
+  "name": "nyanpasu-group-bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "pnpm build && wrangler dev --test-scheduled",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
+    "lint": "oxlint src tests scripts",
+    "fmt": "oxfmt src tests scripts schemas migrations *.json *.jsonc *.md *.ts *.yaml .github .vscode",
+    "fmt:check": "oxfmt --check src tests scripts schemas migrations *.json *.jsonc *.md *.ts *.yaml .github .vscode",
+    "content:schemas": "node scripts/sync-content-schemas.mjs",
+    "content:schemas:check": "node scripts/sync-content-schemas.mjs --check",
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm typecheck:tests && pnpm lint && pnpm fmt:check && pnpm content:schemas:check && pnpm test && pnpm build && wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "deploy": "pnpm check && wrangler deploy",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply nyanpasu-group-bot --local",
+    "db:migrate:remote": "wrangler d1 migrations apply nyanpasu-group-bot --remote",
+    "content:push": "node scripts/content-cli.mjs push",
+    "content:pull": "node scripts/content-cli.mjs pull",
+    "content:list": "node scripts/content-cli.mjs list",
+    "webhook:set": "node --env-file-if-exists=.dev.vars scripts/telegram-webhook.ts set",
+    "webhook:info": "node --env-file-if-exists=.dev.vars scripts/telegram-webhook.ts info"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.13"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261010.1",
+    "@types/node": "^26.6.5",
+    "ajv": "^8.20.0",
+    "drizzle-kit": "^0.31.11",
+    "esbuild": "^0.28.2",
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3",
+    "wrangler": "^4.149.0"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@12.11.2"
+}

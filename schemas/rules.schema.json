@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "中英双语群规",
+  "description": "题目验证开始时展示的完整群规快照。version 是非空版本文本，不要求使用 slug 格式。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "cn", "en"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "可选的群规 schema 标识。"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "\\S",
+      "description": "群规版本文本，例如 2026-10 或 v2.1；不要求使用 slug。"
+    },
+    "cn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 3000,
+      "pattern": "\\S",
+      "description": "完整的简体中文群规正文，最多 3000 个字符；不要为了适配消息长度而截断。"
+    },
+    "en": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 3000,
+      "pattern": "\\S",
+      "description": "完整的英文群规正文，最多 3000 个字符；不要为了适配消息长度而截断。"
+    }
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "单选验证题",
+  "description": "单道中英双语单选题。题目文件放在 questions/<type>/<question-id>.json；answerIndex 从 0 开始，并须在两种语言中指向语义相同的选项。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "prompt", "options", "answerIndex", "translations"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "可选的题目 schema 标识。"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "稳定题目 ID；必须与文件名一致，例如 tcp-basics。"
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S",
+      "description": "中文题干，1 至 2000 个字符。"
+    },
+    "options": {
+      "$ref": "#/definitions/options",
+      "description": "中文选项；顺序必须与英文翻译及 answerIndex 对齐。"
+    },
+    "answerIndex": {
+      "type": "integer",
+      "enum": [0, 1, 2, 3],
+      "description": "正确选项的从零开始索引；只能有一个正确选项。"
+    },
+    "explanation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S",
+      "description": "可选的中文答案解释。"
+    },
+    "translations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["en"],
+      "properties": {
+        "en": {
+          "$ref": "#/definitions/localizedQuestion",
+          "description": "必需的英文题干和选项，选项顺序与中文一致。"
+        },
+        "cn": {
+          "$ref": "#/definitions/localizedQuestion",
+          "description": "可选的简体中文题干和选项覆盖。"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "options": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+        "pattern": "\\S"
+      }
+    },
+    "localizedQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt", "options"],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "\\S"
+        },
+        "options": {
+          "$ref": "#/definitions/options"
+        },
+        "explanation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "\\S"
+        }
+      }
+    }
+  }
+}

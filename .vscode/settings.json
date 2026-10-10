@@ -1,0 +1,10 @@
+{
+  "json.schemas": [
+    {
+      "fileMatch": ["/private-content/questions/*/*.json"],
+      "url": "./schemas/question.schema.json"
+    },
+    { "fileMatch": ["/private-content/packs/*.json"], "url": "./schemas/pack.schema.json" },
+    { "fileMatch": ["/private-content/rules/*.json"], "url": "./schemas/rules.schema.json" }
+  ]
+}
