@@ -66,6 +66,8 @@ pnpm exec wrangler secret put WEBHOOK_SECRET
 
 Enter values interactively. `BOT_TOKEN` is the ordinary BotFather Bot API token; generate `WEBHOOK_SECRET` as a random URL-safe string, for example with `openssl rand -hex 32`. Never put tokens in `wrangler.jsonc`, source code, command-line arguments or chat logs. `.dev.vars` is local-only and is not automatically deployed as production secrets.
 
+Optionally set `DELETE_JOIN_MESSAGES` (`true` or `false`, default `false` in `wrangler.jsonc` `vars`) to delete "joined the group" service messages in every group that has not chosen its own `deleteJoinMessages` setting. It is not a secret; edit `wrangler.jsonc` and redeploy, or override it locally in `.dev.vars`.
+
 5. Put the same two values in the ignored `.dev.vars` and register the webhook:
 
 ```sh
@@ -97,7 +99,8 @@ Content changes take effect on the next join request without redeploying the Wor
 ```
 
 4. A group administrator starts the bot privately with `/start`, then sends `/verify_invite -100GROUP_ID` to obtain an approval-required invite link.
-5. Share the approval link and revoke old links that admit users without approval. Other administrators can still bypass verification by direct invitation or manual approval; agree on a process for that.
+5. Optionally send `/verify_config deleteJoinMessages=on` to delete Telegram's "joined the group" service messages. This works independently of `/verify_enable` and requires the bot's delete-messages permission; the bot warns when that permission is missing. `deleteJoinMessages=off` keeps them again, and `deleteJoinMessages=default` follows the Worker-wide `DELETE_JOIN_MESSAGES` variable (see [Deployment](#deployment)).
+6. Share the approval link and revoke old links that admit users without approval. Other administrators can still bypass verification by direct invitation or manual approval; agree on a process for that.
 
 No public group or group username is required. Admin commands are `/verify_help`, `/verify_status`, `/verify_config`, `/verify_enable`, `/verify_disable` and `/verify_invite`; target a group by ID in private chat and omit it inside the group. Questions and rules are managed through private content, not commands. See [Private group setup](docs/private-group-setup.md) for details.
 

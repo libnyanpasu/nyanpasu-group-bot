@@ -25,6 +25,9 @@ function configuration(config: Config): Config {
     contentId: config.contentId ?? "default",
     timeoutSeconds: config.timeoutSeconds,
     cooldownSeconds: config.cooldownSeconds,
+    ...(typeof config.deleteJoinMessages === "boolean"
+      ? { deleteJoinMessages: config.deleteJoinMessages }
+      : {}),
   };
 }
 

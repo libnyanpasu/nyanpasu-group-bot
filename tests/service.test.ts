@@ -110,7 +110,10 @@ function apiFailure(message: string, fields: Omit<ApiFailure, keyof Error> = {})
   return Object.assign(new Error(message), fields);
 }
 
-function setup({ apiOverrides = {} }: { apiOverrides?: Partial<BotApi> } = {}): TestContext {
+function setup({
+  apiOverrides = {},
+  defaultDeleteJoinMessages,
+}: { apiOverrides?: Partial<BotApi>; defaultDeleteJoinMessages?: boolean } = {}): TestContext {
   const sqlite = new DatabaseSync(":memory:");
   let closed = false;
   const close = () => {
@@ -247,6 +250,7 @@ function setup({ apiOverrides = {} }: { apiOverrides?: Partial<BotApi> } = {}): 
     repository,
     now: () => clock,
     random: () => 0.25,
+    defaultDeleteJoinMessages,
   });
   return {
     api,
@@ -1193,3 +1197,83 @@ describe("join verification service", () => {
 function ctxTime(start: number, quizConfig: Config): number {
   return start + (quizConfig.timeoutSeconds + 1) * 1000 + quizConfig.cooldownSeconds * 1000;
 }
+
+describe("join notice cleanup", () => {
+  const notice: Message = {
+    message_id: 77,
+    chat: { id: -100, type: "supergroup" },
+    from: { id: 42 },
+    new_chat_members: [{ id: 42 }],
+  };
+  const deletions = (ctx: TestContext) =>
+    ctx.calls.filter((call) => call.method === "deleteMessage");
+
+  it("keeps join messages unless the group opted in", async () => {
+    const ctx = setup();
+    try {
+      await ctx.service.joinNotice(notice);
+      await ctx.repository.saveConfig(-100, config);
+      await ctx.service.joinNotice(notice);
+
+      expect(deletions(ctx)).toHaveLength(0);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("deletes join messages when enabled, even while verification is disabled", async () => {
+    const ctx = setup();
+    try {
+      await ctx.repository.saveConfig(-100, {
+        ...config,
+        enabled: false,
+        deleteJoinMessages: true,
+      });
+      await ctx.service.joinNotice(notice);
+
+      expect(deletions(ctx)).toEqual([
+        { method: "deleteMessage", args: { chat_id: -100, message_id: 77 } },
+      ]);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("follows the Worker default unless the group set its own value", async () => {
+    const ctx = setup({ defaultDeleteJoinMessages: true });
+    try {
+      await ctx.service.joinNotice(notice);
+      await ctx.repository.saveConfig(-100, config);
+      await ctx.service.joinNotice(notice);
+      await ctx.repository.saveConfig(-100, { ...config, deleteJoinMessages: false });
+      await ctx.service.joinNotice(notice);
+
+      expect(deletions(ctx)).toHaveLength(2);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("ignores permanent Telegram refusals and rethrows retryable failures", async () => {
+    let failure = apiFailure("denied", {
+      code: 400,
+      description: "Bad Request: message can't be deleted",
+    });
+    const ctx = setup({
+      apiOverrides: {
+        async deleteMessage() {
+          throw failure;
+        },
+      },
+    });
+    try {
+      await ctx.repository.saveConfig(-100, { ...config, deleteJoinMessages: true });
+      await expect(ctx.service.joinNotice(notice)).resolves.toBeUndefined();
+
+      failure = apiFailure("limited", { code: 429, parameters: { retry_after: 3 } });
+      await expect(ctx.service.joinNotice(notice)).rejects.toBe(failure);
+    } finally {
+      ctx.close();
+    }
+  });
+});

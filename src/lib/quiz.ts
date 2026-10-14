@@ -177,6 +177,8 @@ export function validateConfig(config: unknown): string | null {
   ) {
     return "cooldownSeconds must be an integer between 0 and 604800.";
   }
+  if (config.deleteJoinMessages !== undefined && typeof config.deleteJoinMessages !== "boolean")
+    return "deleteJoinMessages must be a boolean.";
   return null;
 }
 

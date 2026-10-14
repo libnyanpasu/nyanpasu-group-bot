@@ -87,6 +87,7 @@ describe("real local D1 binding", () => {
       contentId: "fixture",
       timeoutSeconds: 300,
       cooldownSeconds: 30,
+      deleteJoinMessages: true,
     };
     expect(await repository.getConfig(-100)).toBeNull();
     await repository.saveConfig(-100, config);

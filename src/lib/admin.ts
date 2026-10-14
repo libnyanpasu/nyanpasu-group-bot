@@ -1,4 +1,13 @@
-import type { BotApi, Config, ContentPack, Language, Message, Repository, User } from "../types.js";
+import type {
+  BotApi,
+  Config,
+  ContentPack,
+  Language,
+  Member,
+  Message,
+  Repository,
+  User,
+} from "../types.js";
 import { adminMessage, type AdminMessageKey } from "./admin-i18n.js";
 import { DEFAULT_CONFIG, validateConfig, validateContentPack } from "./quiz.js";
 
@@ -25,6 +34,8 @@ type AdminApi = Pick<
 interface AdminOptions {
   api: AdminApi;
   repository: Pick<Repository, "getConfig" | "saveConfig" | "getContentPack">;
+  /** Used for groups that have not set deleteJoinMessages themselves. */
+  defaultDeleteJoinMessages?: boolean;
 }
 
 function commandFrom(text?: string): ParsedCommand | null {
@@ -49,11 +60,23 @@ function isAdmin(status: string, canInviteUsers?: boolean): boolean {
   return status === "creator" || (status === "administrator" && canInviteUsers === true);
 }
 
-function configText(config: Config, language: Language): string {
+function canDeleteMessages(member: Member): boolean {
+  return (
+    member.status === "creator" ||
+    (member.status === "administrator" && member.can_delete_messages === true)
+  );
+}
+
+function configText(config: Config, language: Language, defaultDelete: boolean): string {
+  const value = adminMessage(language, (config.deleteJoinMessages ?? defaultDelete) ? "on" : "off");
   return adminMessage(language, "config", {
     language: config.language,
     timeoutSeconds: config.timeoutSeconds,
     cooldownSeconds: config.cooldownSeconds,
+    deleteJoinMessages:
+      config.deleteJoinMessages === undefined
+        ? adminMessage(language, "globalDefault", { value })
+        : value,
   });
 }
 
@@ -71,7 +94,7 @@ function packIsUsable(pack: ContentPack | null | undefined): pack is ContentPack
   return pack != null && validateContentPack(pack) === null;
 }
 
-export function createAdmin({ api, repository }: AdminOptions) {
+export function createAdmin({ api, repository, defaultDeleteJoinMessages = false }: AdminOptions) {
   return async function handle(message: Message): Promise<boolean> {
     const command = commandFrom(message.text);
     if (!command) return false;
@@ -182,7 +205,7 @@ export function createAdmin({ api, repository }: AdminOptions) {
           pack && packIsUsable(pack)
             ? pack.rules.version
             : adminMessage(responseLanguage, "noContent"),
-        config: configText(config, responseLanguage),
+        config: configText(config, responseLanguage, defaultDeleteJoinMessages),
       });
       await api.sendMessage({ chat_id: sourceChatId, text });
       return true;
@@ -222,7 +245,7 @@ export function createAdmin({ api, repository }: AdminOptions) {
       if (!args) {
         await api.sendMessage({
           chat_id: sourceChatId,
-          text: configText(config, responseLanguage),
+          text: configText(config, responseLanguage, defaultDeleteJoinMessages),
         });
         return true;
       }
@@ -237,6 +260,14 @@ export function createAdmin({ api, repository }: AdminOptions) {
           updates.language = rawValue;
           continue;
         }
+        if (key === "deleteJoinMessages") {
+          if ((rawValue !== "on" && rawValue !== "off" && rawValue !== "default") || extra.length) {
+            await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
+            return true;
+          }
+          updates.deleteJoinMessages = rawValue === "default" ? undefined : rawValue === "on";
+          continue;
+        }
         if (!CONFIG_KEYS.has(key) || rawValue == null || rawValue === "" || extra.length) {
           await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
           return true;
@@ -248,6 +279,7 @@ export function createAdmin({ api, repository }: AdminOptions) {
         (updates as Record<string, unknown>)[key] = Number(rawValue);
       }
       const next: Config = { ...config, ...updates };
+      if (next.deleteJoinMessages === undefined) delete next.deleteJoinMessages;
       const error = validateConfig(next);
       if (error) {
         await send(api, sourceChatId, responseLanguage, "invalidConfigUpdate", { error });
@@ -255,12 +287,19 @@ export function createAdmin({ api, repository }: AdminOptions) {
       }
       await repository.saveConfig(chatId, next);
       const newLanguage = groupLanguage(next);
-      await api.sendMessage({
-        chat_id: sourceChatId,
-        text: adminMessage(newLanguage, "configUpdated", {
-          config: configText(next, newLanguage),
-        }),
+      let text = adminMessage(newLanguage, "configUpdated", {
+        config: configText(next, newLanguage, defaultDeleteJoinMessages),
       });
+      if (
+        Object.hasOwn(updates, "deleteJoinMessages") &&
+        (next.deleteJoinMessages ?? defaultDeleteJoinMessages)
+      ) {
+        const me = await api.getMe();
+        const botMember = await api.getChatMember({ chat_id: chatId, user_id: me.id });
+        if (!canDeleteMessages(botMember))
+          text += `\n${adminMessage(newLanguage, "botNeedsDeletePermission")}`;
+      }
+      await api.sendMessage({ chat_id: sourceChatId, text });
       return true;
     }
 

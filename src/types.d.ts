@@ -15,6 +15,8 @@ export interface Config {
   contentId: string;
   timeoutSeconds: number;
   cooldownSeconds: number;
+  /** Delete Telegram's "joined the group" service messages; absent inherits DELETE_JOIN_MESSAGES. */
+  deleteJoinMessages?: boolean;
 }
 export interface ContentPack {
   id: string;
@@ -88,6 +90,7 @@ export interface Message {
   from?: User;
   sender_chat?: Chat;
   text?: string;
+  new_chat_members?: User[];
 }
 export interface JoinRequest {
   chat: Chat;
@@ -115,6 +118,8 @@ export interface Bindings {
   DB: D1Database;
   BOT_TOKEN: string;
   WEBHOOK_SECRET: string;
+  /** Default for groups without their own deleteJoinMessages setting: "true" or "false". */
+  DELETE_JOIN_MESSAGES?: string;
 }
 export interface MessageBody {
   text: string;
@@ -123,6 +128,7 @@ export interface MessageBody {
 export interface Member {
   status: string;
   can_invite_users?: boolean;
+  can_delete_messages?: boolean;
 }
 export interface BotApi {
   deleteMessage(input: { chat_id: number; message_id: number }): Promise<boolean>;
