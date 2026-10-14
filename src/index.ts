@@ -77,12 +77,23 @@ function parseMessage(value: unknown): Message | null {
   if ((value.from !== undefined && !from) || (value.sender_chat !== undefined && !senderChat))
     return null;
   if (value.text !== undefined && typeof value.text !== "string") return null;
+  let newChatMembers: User[] | undefined;
+  if (value.new_chat_members !== undefined) {
+    if (!Array.isArray(value.new_chat_members)) return null;
+    newChatMembers = [];
+    for (const member of value.new_chat_members) {
+      const user = parseUser(member);
+      if (!user) return null;
+      newChatMembers.push(user);
+    }
+  }
   return {
     message_id: value.message_id,
     chat,
     ...(from ? { from } : {}),
     ...(senderChat ? { sender_chat: senderChat } : {}),
     ...(typeof value.text === "string" ? { text: value.text } : {}),
+    ...(newChatMembers ? { new_chat_members: newChatMembers } : {}),
   };
 }
 
@@ -180,7 +191,9 @@ app.post("/webhook", async (context) => {
 
   try {
     const runtime = createRuntime(context.env);
-    if (update.kind === "message") {
+    if (update.kind === "message" && update.value.new_chat_members) {
+      await runtime.service.joinNotice(update.value);
+    } else if (update.kind === "message") {
       const handled = await runtime.admin.handle(update.value);
       if (!handled && /^\/(?:start|help)(?:\s|$)/.test(update.value.text ?? "")) {
         await runtime.service.start(update.value);

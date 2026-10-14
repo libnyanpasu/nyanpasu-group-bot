@@ -16,4 +16,6 @@
     },
   ],
   "observability": { "enabled": true },
+  // Default for groups that have not run /verify_config deleteJoinMessages=on|off.
+  "vars": { "DELETE_JOIN_MESSAGES": "false" },
 }

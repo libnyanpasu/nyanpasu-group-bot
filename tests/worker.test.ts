@@ -41,6 +41,7 @@ function runtime({
       start: vi.fn(async (_message: Message) => {}),
       callback: vi.fn(async () => {}),
       join: vi.fn(async () => {}),
+      joinNotice: vi.fn(async (_message: Message) => {}),
       maintenance: vi.fn(async () => {}),
       ...overrides,
     },
@@ -169,6 +170,51 @@ describe("Cloudflare Worker webhook", () => {
 
     expect(response.status).toBe(200);
     expect(instance.admin.handle).toHaveBeenCalledOnce();
+  });
+
+  it("routes join service messages to join-notice cleanup instead of admin commands", async () => {
+    const instance = runtime();
+    runtimeMock.createRuntime.mockReturnValue(instance);
+    const response = await worker.fetch(
+      webhook(
+        JSON.stringify({
+          update_id: 17,
+          message: {
+            message_id: 5,
+            chat: { id: -100, type: "supergroup", title: "Group" },
+            from: { id: 42, is_bot: false, first_name: "A" },
+            new_chat_members: [{ id: 42, is_bot: false, first_name: "A" }],
+          },
+        }),
+      ),
+      env,
+      executionContext,
+    );
+
+    expect(response.status).toBe(200);
+    expect(instance.service.joinNotice).toHaveBeenCalledWith(
+      expect.objectContaining({ message_id: 5, new_chat_members: [{ id: 42 }] }),
+    );
+    expect(instance.admin.handle).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed new chat members", async () => {
+    const response = await worker.fetch(
+      webhook(
+        JSON.stringify({
+          update_id: 18,
+          message: {
+            message_id: 5,
+            chat: { id: -100, type: "supergroup" },
+            new_chat_members: [{}],
+          },
+        }),
+      ),
+      env,
+      executionContext,
+    );
+
+    expect(response.status).toBe(400);
   });
 
   it("dispatches callback queries and join requests with their update ID", async () => {

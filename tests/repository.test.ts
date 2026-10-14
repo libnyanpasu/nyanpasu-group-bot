@@ -98,6 +98,7 @@ const config: Config = {
   contentId: "test-content",
   timeoutSeconds: 300,
   cooldownSeconds: 30,
+  deleteJoinMessages: false,
 };
 
 afterEach(() => {
@@ -116,6 +117,20 @@ describe("repository", () => {
       const replacement = { ...config, enabled: false };
       await repository.saveConfig(-100, replacement);
       expect(await repository.getConfig(-100)).toEqual(replacement);
+    } finally {
+      close();
+    }
+  });
+
+  it("keeps an unset join-message preference distinct from an explicit off", async () => {
+    const { database, close } = setup();
+    try {
+      const repository = createRepository(database);
+      const { deleteJoinMessages: _omitted, ...inherited } = config;
+      await repository.saveConfig(-100, inherited);
+      expect(await repository.getConfig(-100)).toEqual(inherited);
+      await repository.saveConfig(-100, { ...inherited, deleteJoinMessages: false });
+      expect(await repository.getConfig(-100)).toEqual({ ...inherited, deleteJoinMessages: false });
     } finally {
       close();
     }

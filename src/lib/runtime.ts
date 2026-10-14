@@ -5,12 +5,18 @@ import { createRepository } from "./repository.js";
 import { createService } from "./service.js";
 import { createTelegramApi } from "./telegram.js";
 
+/** Parse a boolean Worker variable; anything other than "true" or "1" is off. */
+export function envFlag(value: string | undefined): boolean {
+  return /^(?:true|1)$/i.test(value?.trim() ?? "");
+}
+
 /** Construct isolated dependencies for one Worker request or scheduled run. */
 export function createRuntime(env: Bindings) {
   const api = createTelegramApi(env.BOT_TOKEN);
   const repository = createRepository(drizzle(env.DB));
+  const defaultDeleteJoinMessages = envFlag(env.DELETE_JOIN_MESSAGES);
   return {
-    service: createService({ api, repository }),
-    admin: { handle: createAdmin({ api, repository }) },
+    service: createService({ api, repository, defaultDeleteJoinMessages }),
+    admin: { handle: createAdmin({ api, repository, defaultDeleteJoinMessages }) },
   };
 }

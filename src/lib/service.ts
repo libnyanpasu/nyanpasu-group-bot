@@ -49,11 +49,14 @@ export function createService({
   repository,
   now = Date.now,
   random = Math.random,
+  defaultDeleteJoinMessages = false,
 }: {
   api: BotApi;
   repository: Repository;
   now?: () => number;
   random?: () => number;
+  /** Used for groups that have not set deleteJoinMessages themselves. */
+  defaultDeleteJoinMessages?: boolean;
 }) {
   async function display(session: Session, privateChatId?: number) {
     const latest = await repository.getSession(session.key);
@@ -434,6 +437,21 @@ export function createService({
     await display(session);
   }
 
+  /** Delete a "joined the group" service message when the group or the Worker default opts in. */
+  async function joinNotice(message: Message) {
+    if (message.chat.type !== "group" && message.chat.type !== "supergroup") return;
+    const config = await repository.getConfig(message.chat.id);
+    if (!(config?.deleteJoinMessages ?? defaultDeleteJoinMessages)) return;
+    try {
+      await api.deleteMessage({ chat_id: message.chat.id, message_id: message.message_id });
+    } catch (caught) {
+      // Missing rights, a vanished message or a removed bot will not succeed on retry;
+      // rate limits, server errors and network failures are left to Telegram redelivery.
+      const { code } = apiError(caught);
+      if (code !== 400 && code !== 403) throw caught;
+    }
+  }
+
   async function start(message: Message) {
     if (message.chat?.type !== "private" || !message.from) return;
     const sessions = await repository.listSessionsForUser(message.from.id);
@@ -456,5 +474,5 @@ export function createService({
       await display(session, message.chat.id);
     }
   }
-  return { join, callback, start, maintenance };
+  return { join, callback, start, joinNotice, maintenance };
 }

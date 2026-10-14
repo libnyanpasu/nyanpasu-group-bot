@@ -65,9 +65,16 @@ interface SetupOptions {
   member?: Member;
   botMember?: Member;
   pack?: ContentPack | null;
+  defaultDeleteJoinMessages?: boolean;
 }
 
-function setup({ config = null, member, botMember, pack = TEST_PACK }: SetupOptions = {}) {
+function setup({
+  config = null,
+  member,
+  botMember,
+  pack = TEST_PACK,
+  defaultDeleteJoinMessages,
+}: SetupOptions = {}) {
   const storedConfig: Config | null = config ? { ...DEFAULT_CONFIG, ...config } : null;
   const api = {
     sendMessage: vi.fn<BotApi["sendMessage"]>().mockResolvedValue({
@@ -98,7 +105,7 @@ function setup({ config = null, member, botMember, pack = TEST_PACK }: SetupOpti
       .fn<Repository["getContentPack"]>()
       .mockImplementation(async (id) => (pack && pack.id === id ? pack : null)),
   } satisfies AdminRepository;
-  const handle = createAdmin({ api, repository });
+  const handle = createAdmin({ api, repository, defaultDeleteJoinMessages });
   return { api, repository, handle };
 }
 
@@ -215,6 +222,69 @@ describe("createAdmin", () => {
         contentId: "default",
       }),
     );
+  });
+
+  it("toggles join-message deletion and warns when the bot cannot delete messages", async () => {
+    const { api, repository, handle } = setup({
+      botMember: { status: "administrator", can_invite_users: true },
+    });
+
+    await handle(groupMessage("/verify_config deleteJoinMessages=on"));
+
+    expect(repository.saveConfig).toHaveBeenCalledWith(
+      GROUP_ID,
+      expect.objectContaining({ deleteJoinMessages: true }),
+    );
+    expect(api.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining("删除消息权限") }),
+    );
+  });
+
+  it("does not warn when the bot can delete messages or the option is turned off", async () => {
+    const { api, repository, handle } = setup({
+      botMember: { status: "administrator", can_invite_users: true, can_delete_messages: true },
+    });
+
+    await handle(groupMessage("/verify_config deleteJoinMessages=on"));
+    await handle(groupMessage("/verify_config deleteJoinMessages=off"));
+
+    expect(repository.saveConfig).toHaveBeenLastCalledWith(
+      GROUP_ID,
+      expect.objectContaining({ deleteJoinMessages: false }),
+    );
+    expect(api.sendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining("删除消息权限") }),
+    );
+  });
+
+  it("shows the Worker default and lets deleteJoinMessages=default clear a group override", async () => {
+    const { api, repository, handle } = setup({
+      config: { language: "en", deleteJoinMessages: false },
+      defaultDeleteJoinMessages: true,
+      botMember: { status: "administrator", can_invite_users: true, can_delete_messages: true },
+    });
+
+    await handle(groupMessage("/verify_config"));
+    expect(api.sendMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ text: expect.stringMatching(/Delete join messages: Off$/) }),
+    );
+
+    await handle(groupMessage("/verify_config deleteJoinMessages=default"));
+    const saved = repository.saveConfig.mock.calls[0][1];
+    expect(Object.hasOwn(saved, "deleteJoinMessages")).toBe(false);
+    expect(api.sendMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Delete join messages: On (global default)"),
+      }),
+    );
+  });
+
+  it("rejects non on/off join-message deletion values", async () => {
+    const { repository, handle } = setup();
+
+    await handle(groupMessage("/verify_config deleteJoinMessages=true"));
+
+    expect(repository.saveConfig).not.toHaveBeenCalled();
   });
 
   it("rejects invalid durations without saving", async () => {
