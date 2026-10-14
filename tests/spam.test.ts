@@ -7,6 +7,8 @@ import {
   loadBlocklist,
   normalizeSpamText,
   spacedHan,
+  spamDefaultsFromEnv,
+  spamSettings,
   validateBlocklist,
 } from "../src/lib/spam.js";
 import type { Message } from "../src/types.js";
@@ -93,5 +95,53 @@ describe("casListed", () => {
         throw new Error("offline");
       }),
     ).toBe(false);
+  });
+});
+
+describe("spam defaults", () => {
+  it("reads Worker variables and falls back on missing or malformed values", () => {
+    expect(spamDefaultsFromEnv({})).toEqual({
+      mode: "off",
+      firstMessages: 3,
+      ban: true,
+      cas: true,
+    });
+    expect(
+      spamDefaultsFromEnv({
+        SPAM_MODE: " ALL ",
+        SPAM_FIRST_MESSAGES: "5",
+        SPAM_BAN: "false",
+        SPAM_CAS: "0",
+      }),
+    ).toEqual({ mode: "all", firstMessages: 5, ban: false, cas: false });
+    expect(
+      spamDefaultsFromEnv({
+        SPAM_MODE: "on",
+        SPAM_FIRST_MESSAGES: "0",
+        SPAM_BAN: "maybe",
+        SPAM_CAS: "",
+      }),
+    ).toEqual({ mode: "off", firstMessages: 3, ban: true, cas: true });
+    expect(spamDefaultsFromEnv({ SPAM_FIRST_MESSAGES: "101" }).firstMessages).toBe(3);
+    expect(spamDefaultsFromEnv({ SPAM_FIRST_MESSAGES: "2.5" }).firstMessages).toBe(3);
+  });
+
+  it("lets group settings override the defaults field by field", () => {
+    const defaults = { mode: "all" as const, firstMessages: 5, ban: false, cas: false };
+    expect(spamSettings(null, defaults)).toEqual(defaults);
+    expect(
+      spamSettings(
+        {
+          language: "cn",
+          enabled: false,
+          contentId: "default",
+          timeoutSeconds: 300,
+          cooldownSeconds: 1800,
+          spamMode: "new",
+          spamBan: true,
+        },
+        defaults,
+      ),
+    ).toEqual({ mode: "new", firstMessages: 5, ban: true, cas: false });
   });
 });

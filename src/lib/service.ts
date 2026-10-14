@@ -21,6 +21,7 @@ import type {
 import { t, detectLanguage } from "./i18n.js";
 import {
   type BlocklistMatcher,
+  type SpamSettings,
   casListed,
   detectSpam,
   loadBlocklist,
@@ -75,6 +76,7 @@ export function createService({
   now = Date.now,
   random = Math.random,
   defaultDeleteJoinMessages = false,
+  spamDefaults,
   blocklist = () => loadBlocklist((id) => repository.getBlocklist(id)),
   casCheck = (userId) => casListed(userId),
 }: {
@@ -84,6 +86,8 @@ export function createService({
   random?: () => number;
   /** Used for groups that have not set deleteJoinMessages themselves. */
   defaultDeleteJoinMessages?: boolean;
+  /** Spam filter settings for groups that have not set their own. */
+  spamDefaults?: SpamSettings;
   blocklist?: () => Promise<BlocklistMatcher | null>;
   casCheck?: (userId: number) => Promise<boolean>;
 }) {
@@ -493,7 +497,7 @@ export function createService({
     if (message.sender_chat?.id === message.chat.id) return false;
     const senderId = message.sender_chat?.id ?? message.from?.id;
     if (senderId === undefined) return false;
-    const settings = spamSettings(await repository.getConfig(message.chat.id));
+    const settings = spamSettings(await repository.getConfig(message.chat.id), spamDefaults);
     if (settings.mode === "off") return false;
 
     const chatId = message.chat.id;

@@ -65,13 +65,55 @@ export interface BlocklistMatcher {
   deleteExact: Set<string>;
 }
 
-/** Resolve a group's filter settings, filling defaults for unset fields. */
-export function spamSettings(config: Config | null | undefined): SpamSettings {
+export const DEFAULT_SPAM_SETTINGS: SpamSettings = {
+  mode: "off",
+  firstMessages: DEFAULT_SPAM_FIRST_MESSAGES,
+  ban: true,
+  cas: true,
+};
+
+/** Resolve a group's filter settings; unset fields follow the Worker-wide defaults. */
+export function spamSettings(
+  config: Config | null | undefined,
+  defaults: SpamSettings = DEFAULT_SPAM_SETTINGS,
+): SpamSettings {
   return {
-    mode: config?.spamMode ?? "off",
-    firstMessages: config?.spamFirstMessages ?? DEFAULT_SPAM_FIRST_MESSAGES,
-    ban: config?.spamBan ?? true,
-    cas: config?.spamCas ?? true,
+    mode: config?.spamMode ?? defaults.mode,
+    firstMessages: config?.spamFirstMessages ?? defaults.firstMessages,
+    ban: config?.spamBan ?? defaults.ban,
+    cas: config?.spamCas ?? defaults.cas,
+  };
+}
+
+function envBoolean(value: string | undefined, fallback: boolean): boolean {
+  const text = value?.trim().toLowerCase() ?? "";
+  if (text === "true" || text === "1") return true;
+  if (text === "false" || text === "0") return false;
+  return fallback;
+}
+
+/**
+ * Read the Worker-wide filter defaults from SPAM_MODE, SPAM_FIRST_MESSAGES, SPAM_BAN and
+ * SPAM_CAS. Missing or malformed values fall back to the built-in defaults.
+ */
+export function spamDefaultsFromEnv(env: {
+  SPAM_MODE?: string;
+  SPAM_FIRST_MESSAGES?: string;
+  SPAM_BAN?: string;
+  SPAM_CAS?: string;
+}): SpamSettings {
+  const mode = env.SPAM_MODE?.trim().toLowerCase();
+  const firstMessages = Number(env.SPAM_FIRST_MESSAGES?.trim() || Number.NaN);
+  return {
+    mode: mode === "off" || mode === "new" || mode === "all" ? mode : DEFAULT_SPAM_SETTINGS.mode,
+    firstMessages:
+      Number.isSafeInteger(firstMessages) &&
+      firstMessages >= 1 &&
+      firstMessages <= MAX_SPAM_FIRST_MESSAGES
+        ? firstMessages
+        : DEFAULT_SPAM_SETTINGS.firstMessages,
+    ban: envBoolean(env.SPAM_BAN, DEFAULT_SPAM_SETTINGS.ban),
+    cas: envBoolean(env.SPAM_CAS, DEFAULT_SPAM_SETTINGS.cas),
   };
 }
 

@@ -66,7 +66,7 @@ pnpm exec wrangler secret put WEBHOOK_SECRET
 
 Enter values interactively. `BOT_TOKEN` is the ordinary BotFather Bot API token; generate `WEBHOOK_SECRET` as a random URL-safe string, for example with `openssl rand -hex 32`. Never put tokens in `wrangler.jsonc`, source code, command-line arguments or chat logs. `.dev.vars` is local-only and is not automatically deployed as production secrets.
 
-Optionally set `DELETE_JOIN_MESSAGES` (`true` or `false`, default `false` in `wrangler.jsonc` `vars`) to delete "joined the group" service messages in every group that has not chosen its own `deleteJoinMessages` setting. It is not a secret; edit `wrangler.jsonc` and redeploy, or override it locally in `.dev.vars`.
+Optionally set `DELETE_JOIN_MESSAGES` (`true` or `false`, default `false` in `wrangler.jsonc` `vars`) to delete "joined the group" service messages in every group that has not chosen its own `deleteJoinMessages` setting. The `SPAM_*` variables set spam filter defaults the same way; see [Spam filter](#spam-filter). It is not a secret; edit `wrangler.jsonc` and redeploy, or override it locally in `.dev.vars`.
 
 5. Put the same two values in the ignored `.dev.vars` and register the webhook:
 
@@ -117,14 +117,16 @@ D1 stores the group configuration, session snapshots, the content bank, spam blo
 
 ## Spam filter
 
-The filter deletes spam (advertising, scams, funnelling and topics our groups do not host, such as politics) that matches the private blocklist, and can ban senders. It is independent of join verification and configured per group:
+The filter deletes spam (advertising, scams, funnelling and topics our groups do not host, such as politics) that matches the private blocklist, and can ban senders. It is independent of join verification. Each group configures it with `/verify_config`; options a group has not set follow Worker-wide defaults from `wrangler.jsonc` `vars`:
 
-| Option                   | Meaning                                                                                                                 |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `spamMode=off\|new\|all` | `off` (default); `new` inspects each member's first `spamFirstMessages` messages; `all` inspects every message          |
-| `spamFirstMessages=N`    | Messages inspected per member in `new` mode, 1–100 (default 3). Counts restart when a member rejoins                    |
-| `spamBan=on\|off`        | `on` (default) bans senders on ban-tier matches and CAS hits; `off` only deletes, useful for trying out a new blocklist |
-| `spamCas=on\|off`        | `on` (default) checks a sender's first message against the [CAS](https://cas.chat) ban list                             |
+| Group option             | Worker variable       | Built-in default | Meaning                                                                                       |
+| ------------------------ | --------------------- | ---------------- | --------------------------------------------------------------------------------------------- |
+| `spamMode=off\|new\|all` | `SPAM_MODE`           | `off`            | `new` inspects each member's first `spamFirstMessages` messages; `all` inspects every message |
+| `spamFirstMessages=N`    | `SPAM_FIRST_MESSAGES` | `3`              | Messages inspected per member in `new` mode, 1–100. Counts restart when a member rejoins      |
+| `spamBan=on\|off`        | `SPAM_BAN`            | `true`           | Ban senders on ban-tier matches and CAS hits; off only deletes, useful for trying out a list  |
+| `spamCas=on\|off`        | `SPAM_CAS`            | `true`           | Check a sender's first message against the [CAS](https://cas.chat) ban list                   |
+
+Every group option also accepts `default`, which clears the group's own value so the Worker variable applies again; `/verify_config` marks inherited values with "(global default)". Worker variables take `true`/`false` (or `1`/`0`); missing or malformed values fall back to the built-in defaults. They are not secrets: edit `wrangler.jsonc` and redeploy, or override them locally in `.dev.vars`. Setting `SPAM_MODE=all` makes every group without its own setting inspect all messages, including deleting political discussion.
 
 A message is checked together with its caption, hidden link targets, inline button labels and URLs, quoted text, forward origin and the sender's names and username. Edited messages are checked again. Before matching, text and blocklist entries are folded the same way: NFKC (full-width, circled and styled characters), lower case, Cyrillic/Greek look-alikes of Latin letters, and removal of everything except letters and digits, so spacing, punctuation, emoji and zero-width characters cannot split a keyword. Traditional Chinese is not converted; list both forms when needed. Messages whose Han characters are mostly separated by spaces (`加 微 信 领 钱`) are deleted as keyword evasion.
 

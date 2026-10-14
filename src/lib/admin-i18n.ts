@@ -24,7 +24,7 @@ const messages = {
       "/verify_enable 开启验证（需先配置机器人和私有内容包）",
       "/verify_disable 关闭新申请验证",
       "/verify_config 查看或设置语言、时限及是否删除入群提示，例如 /verify_config language=cn timeoutSeconds=300 cooldownSeconds=1800 deleteJoinMessages=on",
-      "/verify_config spamMode=new spamFirstMessages=3 spamBan=on spamCas=on 开启垃圾消息过滤：spamMode=off|new|all 分别为关闭、只查新成员前 N 条消息、检查所有消息",
+      "/verify_config spamMode=new spamFirstMessages=3 spamBan=on spamCas=on 开启垃圾消息过滤：spamMode=off|new|all 分别为关闭、只查新成员前 N 条消息、检查所有消息；设为 default 则跟随全局默认",
       "/verify_invite 获取私密审批邀请链接：先私聊机器人发送 /start，再私聊发送 /verify_invite -100群组ID",
       "题目和规则由项目维护者通过私有内容仓库提供，不能通过 Telegram 命令查看或修改。",
     ].join("\n"),
@@ -54,7 +54,7 @@ const messages = {
     enableSuccess: "入群验证已开启。",
     disableSuccess: "入群验证已关闭；新申请不会进入验证流程。",
     argumentFormat:
-      "参数格式错误：{token}\n可设置：language=en|cn, timeoutSeconds, cooldownSeconds, deleteJoinMessages=on|off|default, spamMode=off|new|all, spamFirstMessages, spamBan=on|off, spamCas=on|off",
+      "参数格式错误：{token}\n可设置：language=en|cn, timeoutSeconds, cooldownSeconds, deleteJoinMessages=on|off|default, spamMode=off|new|all, spamFirstMessages, spamBan=on|off, spamCas=on|off（均可设为 default）",
     integerRequired: "{key} 必须是非负整数。",
     invalidConfigUpdate: "配置无效：{error}",
     configUpdated: "验证参数已更新。\n{config}",
@@ -86,7 +86,7 @@ const messages = {
       "/verify_enable — enable verification (the bot and private content pack must be configured first)",
       "/verify_disable — stop verifying new requests",
       "/verify_config — view or set language, timeouts and join-message deletion, e.g. /verify_config language=en timeoutSeconds=300 cooldownSeconds=1800 deleteJoinMessages=on",
-      "/verify_config spamMode=new spamFirstMessages=3 spamBan=on spamCas=on — enable the spam filter; spamMode=off|new|all means off, only a new member's first N messages, or every message",
+      "/verify_config spamMode=new spamFirstMessages=3 spamBan=on spamCas=on — enable the spam filter; spamMode=off|new|all means off, only a new member's first N messages, or every message; default follows the global default",
       "/verify_invite — get a private approval invite link: send /start to the bot privately, then /verify_invite -100GROUP_ID",
       "Questions and rules are supplied by maintainers through the private content repository and cannot be viewed or edited with Telegram commands.",
     ].join("\n"),
@@ -121,7 +121,7 @@ const messages = {
     disableSuccess:
       "Join verification is disabled; new requests will not enter the verification flow.",
     argumentFormat:
-      "Invalid option: {token}\nSupported options: language=en|cn, timeoutSeconds, cooldownSeconds, deleteJoinMessages=on|off|default, spamMode=off|new|all, spamFirstMessages, spamBan=on|off, spamCas=on|off",
+      "Invalid option: {token}\nSupported options: language=en|cn, timeoutSeconds, cooldownSeconds, deleteJoinMessages=on|off|default, spamMode=off|new|all, spamFirstMessages, spamBan=on|off, spamCas=on|off (each also accepts default)",
     integerRequired: "{key} must be a non-negative integer.",
     invalidConfigUpdate: "Invalid configuration: {error}",
     configUpdated: "Verification settings updated.\n{config}",

@@ -17,7 +17,7 @@ import type {
 import { createRepository } from "../src/lib/repository.js";
 import { createService } from "../src/lib/service.js";
 import { callbackData, refreshCallbackData } from "../src/lib/quiz.js";
-import { compileBlocklist } from "../src/lib/spam.js";
+import { compileBlocklist, type SpamSettings } from "../src/lib/spam.js";
 
 type ServiceCall =
   | { method: "sendMessage"; args: Parameters<BotApi["sendMessage"]>[0] }
@@ -120,11 +120,13 @@ function setup({
   defaultDeleteJoinMessages,
   blocklist,
   casCheck = async () => false,
+  spamDefaults,
 }: {
   apiOverrides?: Partial<BotApi>;
   defaultDeleteJoinMessages?: boolean;
   blocklist?: BlocklistDocument;
   casCheck?: (userId: number) => Promise<boolean>;
+  spamDefaults?: SpamSettings;
 } = {}): TestContext {
   const sqlite = new DatabaseSync(":memory:");
   let closed = false;
@@ -286,6 +288,7 @@ function setup({
     defaultDeleteJoinMessages,
     blocklist: async () => (blocklist ? compileBlocklist(blocklist) : null),
     casCheck,
+    spamDefaults,
   });
   return {
     api,
@@ -1497,6 +1500,22 @@ describe("spam filter", () => {
       await ctx.repository.saveConfig(-100, spamConfig({ spamCas: false }));
       await ctx.service.moderate(groupMessage({ from: { id: 777 } }));
       expect(casCheck).not.toHaveBeenCalled();
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("applies Worker-wide defaults to groups without their own spam settings", async () => {
+    const ctx = setup({
+      blocklist,
+      spamDefaults: { mode: "all", firstMessages: 3, ban: false, cas: false },
+    });
+    try {
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).resolves.toBe(true);
+      expect(methods(ctx)).toEqual(["getChatMember", "deleteMessage"]);
+
+      await ctx.repository.saveConfig(-100, { ...config, spamMode: "off" });
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).resolves.toBe(false);
     } finally {
       ctx.close();
     }

@@ -17,5 +17,12 @@
   ],
   "observability": { "enabled": true },
   // Default for groups that have not run /verify_config deleteJoinMessages=on|off.
-  "vars": { "DELETE_JOIN_MESSAGES": "false" },
+  // Spam filter defaults for groups without their own /verify_config spam* settings.
+  "vars": {
+    "DELETE_JOIN_MESSAGES": "false",
+    "SPAM_MODE": "off",
+    "SPAM_FIRST_MESSAGES": "3",
+    "SPAM_BAN": "true",
+    "SPAM_CAS": "true",
+  },
 }

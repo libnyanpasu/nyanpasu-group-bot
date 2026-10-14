@@ -163,6 +163,11 @@ export interface Bindings {
   WEBHOOK_SECRET: string;
   /** Default for groups without their own deleteJoinMessages setting: "true" or "false". */
   DELETE_JOIN_MESSAGES?: string;
+  /** Spam filter defaults for groups without their own setting; see README › Spam filter. */
+  SPAM_MODE?: string;
+  SPAM_FIRST_MESSAGES?: string;
+  SPAM_BAN?: string;
+  SPAM_CAS?: string;
 }
 export interface MessageBody {
   text: string;
