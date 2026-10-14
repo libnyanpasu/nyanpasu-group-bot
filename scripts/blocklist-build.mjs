@@ -55,17 +55,24 @@ function unescapeXml(text) {
   return text.replace(/&(lt|gt|quot|apos|amp|#\d+|#x[0-9a-f]+);/gi, (match, entity) => {
     const named = { lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" }[entity.toLowerCase()];
     if (named) return named;
-    const code = entity[1] === "x" || entity[1] === "X" ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+    const code =
+      entity[1] === "x" || entity[1] === "X"
+        ? parseInt(entity.slice(2), 16)
+        : Number(entity.slice(1));
     return Number.isFinite(code) ? String.fromCodePoint(code) : match;
   });
 }
 
 function attributes(tag) {
-  return Object.fromEntries([...tag.matchAll(/([\w:]+)="([^"]*)"/g)].map(([, key, value]) => [key, value]));
+  return Object.fromEntries(
+    [...tag.matchAll(/([\w:]+)="([^"]*)"/g)].map(([, key, value]) => [key, value]),
+  );
 }
 
 function texts(xml) {
-  return [...xml.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map(([, text]) => unescapeXml(text)).join("");
+  return [...xml.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)]
+    .map(([, text]) => unescapeXml(text))
+    .join("");
 }
 
 /**
@@ -89,9 +96,13 @@ export function sheetColumns(files, sheetName) {
     .map(([tag]) => attributes(tag))
     .find((relation) => relation.Id === sheet["r:id"]);
   if (!relation) throw new Error(`Workbook sheet ${sheetName} has no target.`);
-  const target = relation.Target.startsWith("/") ? relation.Target.slice(1) : `xl/${relation.Target}`;
+  const target = relation.Target.startsWith("/")
+    ? relation.Target.slice(1)
+    : `xl/${relation.Target}`;
   const shared = files.has("xl/sharedStrings.xml")
-    ? [...read("xl/sharedStrings.xml").matchAll(/<si>([\s\S]*?)<\/si>/g)].map(([, item]) => texts(item))
+    ? [...read("xl/sharedStrings.xml").matchAll(/<si>([\s\S]*?)<\/si>/g)].map(([, item]) =>
+        texts(item),
+      )
     : [];
 
   const columns = new Map();
@@ -136,7 +147,10 @@ export function parseSourceFile(file, body) {
     return Object.entries(file.columns).flatMap(([column, tier]) =>
       (columns.get(column) ?? [])
         .filter(({ row }) => row >= 3)
-        .map(({ value }) => ({ text: Buffer.from(value.trim(), "base64").toString("utf8").trim(), tier })),
+        .map(({ value }) => ({
+          text: Buffer.from(value.trim(), "base64").toString("utf8").trim(),
+          tier,
+        })),
     );
   }
   throw new Error(`Unknown source format ${file.format}.`);
@@ -158,7 +172,11 @@ export function parseSourceFile(file, body) {
  */
 export function mergeBlocklist({ entries, overrides, normalize, validate, version }) {
   const keyOf = (text) => normalize(text.startsWith("=") ? text.slice(1) : text);
-  const dropped = new Set(Object.values(overrides.drop ?? {}).flat().map(keyOf));
+  const dropped = new Set(
+    Object.values(overrides.drop ?? {})
+      .flat()
+      .map(keyOf),
+  );
   const demoted = new Set((overrides.delete ?? []).map(keyOf));
   const samples = (overrides.safeSamples ?? []).map(normalize);
   const report = { read: 0, overridden: [], invalid: [], unsafe: [], duplicates: 0, redundant: [] };
@@ -223,13 +241,18 @@ export function mergeBlocklist({ entries, overrides, normalize, validate, versio
 }
 
 export function parseArguments(argv) {
-  const options = { directory: "private-content", version: new Date().toISOString().slice(0, 10), dryRun: false };
+  const options = {
+    directory: "private-content",
+    version: new Date().toISOString().slice(0, 10),
+    dryRun: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--dry-run") options.dryRun = true;
     else if (argument === "--dir" || argument === "--version") {
       const value = argv[index + 1];
-      if (!value || value.startsWith("--")) throw new Error(`${argument} requires a value.\n${USAGE}`);
+      if (!value || value.startsWith("--"))
+        throw new Error(`${argument} requires a value.\n${USAGE}`);
       options[argument === "--dir" ? "directory" : "version"] = value;
       index += 1;
     } else throw new Error(`Unknown argument: ${argument}\n${USAGE}`);
@@ -276,12 +299,17 @@ async function main() {
   list("Dropped as invalid (fewer than two letters or digits)", report.invalid);
   list("Dropped for matching a safe sample", report.unsafe);
   list("Covered by a shorter entry", report.redundant);
-  console.log(`Result: ${document.ban.length} ban, ${document.delete.length} delete (version ${document.version}).`);
+  console.log(
+    `Result: ${document.ban.length} ban, ${document.delete.length} delete (version ${document.version}).`,
+  );
 
   if (options.dryRun) return;
   const target = resolve(options.directory, "blocklists", "default.json");
   mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, `${JSON.stringify({ $schema: "../schemas/blocklist.schema.json", ...document }, null, 2)}\n`);
+  writeFileSync(
+    target,
+    `${JSON.stringify({ $schema: "../schemas/blocklist.schema.json", ...document }, null, 2)}\n`,
+  );
   console.log(`Wrote ${target}. Review it, then run pnpm content:push.`);
 }
 

@@ -12,3 +12,6 @@ dist/
 
 # Generated spam blocklists (pnpm blocklist:build); only blocklist/ sources and overrides are tracked.
 blocklists/
+
+# Local Serena MCP project state.
+.serena/
