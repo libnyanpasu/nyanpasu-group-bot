@@ -10,6 +10,7 @@ import type {
 } from "../types.js";
 import { adminMessage, type AdminMessageKey } from "./admin-i18n.js";
 import { DEFAULT_CONFIG, validateConfig, validateContentPack } from "./quiz.js";
+import { DEFAULT_BLOCKLIST_ID, spamSettings, validateBlocklist } from "./spam.js";
 
 const COMMANDS = new Set([
   "verify_help",
@@ -19,7 +20,8 @@ const COMMANDS = new Set([
   "verify_config",
   "verify_invite",
 ]);
-const CONFIG_KEYS = new Set(["timeoutSeconds", "cooldownSeconds"]);
+const CONFIG_KEYS = new Set(["timeoutSeconds", "cooldownSeconds", "spamFirstMessages"]);
+const SPAM_KEYS = ["spamMode", "spamFirstMessages", "spamBan", "spamCas"] as const;
 
 interface ParsedCommand {
   name: string;
@@ -33,7 +35,7 @@ type AdminApi = Pick<
 >;
 interface AdminOptions {
   api: AdminApi;
-  repository: Pick<Repository, "getConfig" | "saveConfig" | "getContentPack">;
+  repository: Pick<Repository, "getConfig" | "saveConfig" | "getContentPack" | "getBlocklist">;
   /** Used for groups that have not set deleteJoinMessages themselves. */
   defaultDeleteJoinMessages?: boolean;
 }
@@ -67,8 +69,17 @@ function canDeleteMessages(member: Member): boolean {
   );
 }
 
+function canRestrictMembers(member: Member): boolean {
+  return (
+    member.status === "creator" ||
+    (member.status === "administrator" && member.can_restrict_members === true)
+  );
+}
+
 function configText(config: Config, language: Language, defaultDelete: boolean): string {
   const value = adminMessage(language, (config.deleteJoinMessages ?? defaultDelete) ? "on" : "off");
+  const spam = spamSettings(config);
+  const toggle = (on: boolean) => adminMessage(language, on ? "on" : "off");
   return adminMessage(language, "config", {
     language: config.language,
     timeoutSeconds: config.timeoutSeconds,
@@ -77,6 +88,12 @@ function configText(config: Config, language: Language, defaultDelete: boolean):
       config.deleteJoinMessages === undefined
         ? adminMessage(language, "globalDefault", { value })
         : value,
+    spamMode:
+      spam.mode === "new"
+        ? adminMessage(language, "spamModeNew", { count: spam.firstMessages })
+        : adminMessage(language, spam.mode === "all" ? "spamModeAll" : "off"),
+    spamBan: toggle(spam.ban),
+    spamCas: toggle(spam.cas),
   });
 }
 
@@ -95,6 +112,16 @@ function packIsUsable(pack: ContentPack | null | undefined): pack is ContentPack
 }
 
 export function createAdmin({ api, repository, defaultDeleteJoinMessages = false }: AdminOptions) {
+  /** List bot permissions the advertising filter needs but lacks, in the reply language. */
+  async function missingSpamPermissions(chatId: number, ban: boolean, language: Language) {
+    const me = await api.getMe();
+    const botMember = await api.getChatMember({ chat_id: chatId, user_id: me.id });
+    const missing: AdminMessageKey[] = [];
+    if (!canDeleteMessages(botMember)) missing.push("permissionDelete");
+    if (ban && !canRestrictMembers(botMember)) missing.push("permissionRestrict");
+    return missing.map((key) => adminMessage(language, key));
+  }
+
   return async function handle(message: Message): Promise<boolean> {
     const command = commandFrom(message.text);
     if (!command) return false;
@@ -192,7 +219,12 @@ export function createAdmin({ api, repository, defaultDeleteJoinMessages = false
       const botMember = await api.getChatMember({ chat_id: chatId, user_id: me.id });
       const botCanApprove = isAdmin(botMember.status, botMember.can_invite_users);
       const pack = await repository.getContentPack(config.contentId);
+      const blocklist = await repository.getBlocklist(DEFAULT_BLOCKLIST_ID);
       const text = adminMessage(responseLanguage, "status", {
+        blocklistVersion:
+          blocklist && !validateBlocklist(blocklist)
+            ? blocklist.version
+            : adminMessage(responseLanguage, "noContent"),
         enabled: adminMessage(responseLanguage, config.enabled ? "enabled" : "disabled"),
         botPermission: adminMessage(
           responseLanguage,
@@ -268,6 +300,22 @@ export function createAdmin({ api, repository, defaultDeleteJoinMessages = false
           updates.deleteJoinMessages = rawValue === "default" ? undefined : rawValue === "on";
           continue;
         }
+        if (key === "spamMode") {
+          if ((rawValue !== "off" && rawValue !== "new" && rawValue !== "all") || extra.length) {
+            await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
+            return true;
+          }
+          updates.spamMode = rawValue;
+          continue;
+        }
+        if (key === "spamBan" || key === "spamCas") {
+          if ((rawValue !== "on" && rawValue !== "off") || extra.length) {
+            await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
+            return true;
+          }
+          updates[key] = rawValue === "on";
+          continue;
+        }
         if (!CONFIG_KEYS.has(key) || rawValue == null || rawValue === "" || extra.length) {
           await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
           return true;
@@ -298,6 +346,12 @@ export function createAdmin({ api, repository, defaultDeleteJoinMessages = false
         const botMember = await api.getChatMember({ chat_id: chatId, user_id: me.id });
         if (!canDeleteMessages(botMember))
           text += `\n${adminMessage(newLanguage, "botNeedsDeletePermission")}`;
+      }
+      const spam = spamSettings(next);
+      if (SPAM_KEYS.some((key) => Object.hasOwn(updates, key)) && spam.mode !== "off") {
+        const missing = await missingSpamPermissions(chatId, spam.ban, newLanguage);
+        if (missing.length)
+          text += `\n${adminMessage(newLanguage, "botNeedsSpamPermissions", { permissions: missing.join(", ") })}`;
       }
       await api.sendMessage({ chat_id: sourceChatId, text });
       return true;

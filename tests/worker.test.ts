@@ -42,6 +42,7 @@ function runtime({
       callback: vi.fn(async () => {}),
       join: vi.fn(async () => {}),
       joinNotice: vi.fn(async (_message: Message) => {}),
+      moderate: vi.fn(async (_message: Message, _options?: { edited?: boolean }) => false),
       maintenance: vi.fn(async () => {}),
       ...overrides,
     },
@@ -193,7 +194,71 @@ describe("Cloudflare Worker webhook", () => {
 
     expect(response.status).toBe(200);
     expect(instance.service.joinNotice).toHaveBeenCalledWith(
-      expect.objectContaining({ message_id: 5, new_chat_members: [{ id: 42 }] }),
+      expect.objectContaining({
+        message_id: 5,
+        new_chat_members: [{ id: 42, first_name: "A" }],
+      }),
+    );
+    expect(instance.admin.handle).not.toHaveBeenCalled();
+  });
+
+  it("filters group messages before admin commands and stops when one is removed", async () => {
+    const instance = runtime({ overrides: { moderate: vi.fn(async () => true) } });
+    runtimeMock.createRuntime.mockReturnValue(instance);
+    const response = await worker.fetch(
+      webhook(
+        JSON.stringify({
+          update_id: 19,
+          message: {
+            message_id: 6,
+            chat: { id: -100, type: "supergroup" },
+            from: { id: 42, first_name: "Spam" },
+            text: "/verify_help buy now",
+            caption: 5,
+            reply_markup: { inline_keyboard: [[{ text: "Join", url: "https://t.me/x" }, 7]] },
+            forward_origin: { type: "channel", chat: { id: -1009, type: "channel", title: "Ads" } },
+          },
+        }),
+      ),
+      env,
+      executionContext,
+    );
+
+    expect(response.status).toBe(200);
+    expect(instance.service.moderate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        from: { id: 42, first_name: "Spam" },
+        reply_markup: { inline_keyboard: [[{ text: "Join", url: "https://t.me/x" }]] },
+        forward_origin: { type: "channel", chat: { id: -1009, type: "channel", title: "Ads" } },
+      }),
+    );
+    expect(vi.mocked(instance.service.moderate).mock.calls[0][0]).not.toHaveProperty("caption");
+    expect(instance.admin.handle).not.toHaveBeenCalled();
+  });
+
+  it("only filters edited messages", async () => {
+    const instance = runtime();
+    runtimeMock.createRuntime.mockReturnValue(instance);
+    const response = await worker.fetch(
+      webhook(
+        JSON.stringify({
+          update_id: 20,
+          edited_message: {
+            message_id: 6,
+            chat: { id: -100, type: "supergroup" },
+            from: { id: 42 },
+            text: "/verify_help",
+          },
+        }),
+      ),
+      env,
+      executionContext,
+    );
+
+    expect(response.status).toBe(200);
+    expect(instance.service.moderate).toHaveBeenCalledWith(
+      expect.objectContaining({ message_id: 6 }),
+      { edited: true },
     );
     expect(instance.admin.handle).not.toHaveBeenCalled();
   });

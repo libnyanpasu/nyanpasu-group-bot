@@ -8,12 +8,14 @@ import Ajv from "ajv";
  * @property {{ id: string, document: import("../src/types.js").PackDocument }[]} packs
  * @property {{ id: string, document: import("../src/types.js").RulesDocument }[]} rules
  * @property {{ type: string, id: string, document: import("../src/types.js").Question }[]} questions
+ * @property {{ id: string, document: import("../src/types.js").BlocklistDocument }[]} [blocklists]
+ *   Advertising blocklists; `undefined` means "leave D1 blocklists untouched".
  */
 
 const schemaRoot = fileURLToPath(new URL("../schemas/", import.meta.url));
 const ajv = new Ajv({ allErrors: true, strict: true });
 const validators = Object.fromEntries(
-  ["question", "rules", "pack"].map((name) => [
+  ["question", "rules", "pack", "blocklist"].map((name) => [
     name,
     ajv.compile(JSON.parse(readFileSync(resolve(schemaRoot, `${name}.schema.json`), "utf8"))),
   ]),
@@ -81,7 +83,7 @@ function readDocument(root, path, kind) {
  * @returns {ContentDocuments}
  */
 export function readContentDocuments(source, required) {
-  const empty = { packs: [], rules: [], questions: [] };
+  const empty = { packs: [], rules: [], questions: [], blocklists: [] };
   const root = resolve(source);
   const packDirectory = resolve(root, "packs");
   if (!existsSync(root)) {
@@ -132,11 +134,35 @@ export function readContentDocuments(source, required) {
       }
     }
   }
+  // Blocklists are optional so checkouts without advertising filtering stay valid.
+  const blocklistDirectory = resolve(root, "blocklists");
+  const blocklists = existsSync(blocklistDirectory)
+    ? jsonFiles(root, blocklistDirectory).map((path) => ({
+        id: basename(path, ".json"),
+        document: readDocument(root, path, "blocklist"),
+      }))
+    : [];
   return {
     packs,
     rules: [...rulesById].map(([id, document]) => ({ id, document })),
     questions: [...questionsByKey.values()],
+    blocklists,
   };
+}
+
+/**
+ * Check blocklists with the Worker's own validator, which also rejects entries that
+ * normalize to fewer than two letters or digits.
+ *
+ * @param {ContentDocuments} documents
+ * @param {(blocklist: unknown) => string | null} validateBlocklist
+ */
+export function validateBlocklists(documents, validateBlocklist) {
+  for (const { id, document } of documents.blocklists ?? []) {
+    const error = validateBlocklist(document);
+    // Only the validator's location is reported; entries are private.
+    if (error) throw new Error(`Blocklist ${id}: ${error.replace(/:.*$/, "")}`);
+  }
 }
 
 /**

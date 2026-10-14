@@ -19,6 +19,13 @@ import type {
   Message,
 } from "../types.js";
 import { t, detectLanguage } from "./i18n.js";
+import {
+  type BlocklistMatcher,
+  casListed,
+  detectSpam,
+  loadBlocklist,
+  spamSettings,
+} from "./spam.js";
 
 const pending = (s: Session) => ["approve_pending", "decline_pending"].includes(s.status);
 const CLEANUP_LEASE_MS = 60_000;
@@ -38,6 +45,24 @@ function cleanupDue(session: Session, at: number): boolean {
   );
 }
 
+/**
+ * Run a moderation call whose permanent refusals (missing rights, vanished message,
+ * removed bot) cannot succeed on retry; rate limits, server and network errors are
+ * rethrown so the webhook fails and Telegram redelivers the update.
+ */
+async function moderationCall(call: () => Promise<unknown>): Promise<void> {
+  try {
+    await call();
+  } catch (caught) {
+    const { code } = apiError(caught);
+    if (code !== 400 && code !== 403) throw caught;
+  }
+}
+
+function groupChat(message: Message): boolean {
+  return message.chat.type === "group" || message.chat.type === "supergroup";
+}
+
 function alreadyDeleted(error: unknown): boolean {
   const details = apiError(error);
   return details.code === 400 && /message to delete not found/i.test(details.description ?? "");
@@ -50,6 +75,8 @@ export function createService({
   now = Date.now,
   random = Math.random,
   defaultDeleteJoinMessages = false,
+  blocklist = () => loadBlocklist((id) => repository.getBlocklist(id)),
+  casCheck = (userId) => casListed(userId),
 }: {
   api: BotApi;
   repository: Repository;
@@ -57,6 +84,8 @@ export function createService({
   random?: () => number;
   /** Used for groups that have not set deleteJoinMessages themselves. */
   defaultDeleteJoinMessages?: boolean;
+  blocklist?: () => Promise<BlocklistMatcher | null>;
+  casCheck?: (userId: number) => Promise<boolean>;
 }) {
   async function display(session: Session, privateChatId?: number) {
     const latest = await repository.getSession(session.key);
@@ -437,19 +466,67 @@ export function createService({
     await display(session);
   }
 
-  /** Delete a "joined the group" service message when the group or the Worker default opts in. */
+  /**
+   * Handle a "joined the group" service message: rejoining members become new again for
+   * the advertising filter, and the notice is deleted when the group or Worker default opts in.
+   */
   async function joinNotice(message: Message) {
-    if (message.chat.type !== "group" && message.chat.type !== "supergroup") return;
+    if (!groupChat(message)) return;
+    await repository.resetMembers(
+      message.chat.id,
+      (message.new_chat_members ?? []).map((member) => member.id),
+    );
     const config = await repository.getConfig(message.chat.id);
     if (!(config?.deleteJoinMessages ?? defaultDeleteJoinMessages)) return;
-    try {
-      await api.deleteMessage({ chat_id: message.chat.id, message_id: message.message_id });
-    } catch (caught) {
-      // Missing rights, a vanished message or a removed bot will not succeed on retry;
-      // rate limits, server errors and network failures are left to Telegram redelivery.
-      const { code } = apiError(caught);
-      if (code !== 400 && code !== 403) throw caught;
+    await moderationCall(() =>
+      api.deleteMessage({ chat_id: message.chat.id, message_id: message.message_id }),
+    );
+  }
+
+  /**
+   * Apply the group's advertising filter. Returns true when the message was removed.
+   * Edits are inspected but neither count as new messages nor trigger CAS lookups.
+   */
+  async function moderate(message: Message, { edited = false } = {}): Promise<boolean> {
+    if (!groupChat(message) || message.is_automatic_forward) return false;
+    // Anonymous administrators post as the group itself.
+    if (message.sender_chat?.id === message.chat.id) return false;
+    const senderId = message.sender_chat?.id ?? message.from?.id;
+    if (senderId === undefined) return false;
+    const settings = spamSettings(await repository.getConfig(message.chat.id));
+    if (settings.mode === "off") return false;
+
+    const chatId = message.chat.id;
+    const seen = await repository.getMemberMessages(chatId, senderId);
+    if (settings.mode === "new" && seen >= settings.firstMessages) return false;
+    let verdict = detectSpam(message, await blocklist());
+    if (!verdict && settings.cas && !edited && seen === 0 && !message.sender_chat) {
+      if (await casCheck(senderId)) verdict = { action: "ban", reason: "cas" };
     }
+    if (!verdict) {
+      // "all" mode only needs to remember that the first-message CAS lookup happened.
+      const trackUntil = settings.mode === "new" ? settings.firstMessages : 1;
+      if (!edited && seen < trackUntil)
+        await repository.recordMemberMessage(chatId, senderId, now());
+      return false;
+    }
+
+    // Admin status is only looked up after a match to keep clean traffic API-free.
+    if (!message.sender_chat) {
+      const member = await api.getChatMember({ chat_id: chatId, user_id: senderId });
+      if (member.status === "creator" || member.status === "administrator") return false;
+    }
+    await moderationCall(() =>
+      api.deleteMessage({ chat_id: chatId, message_id: message.message_id }),
+    );
+    if (verdict.action === "ban" && settings.ban) {
+      await moderationCall(() =>
+        message.sender_chat
+          ? api.banChatSenderChat({ chat_id: chatId, sender_chat_id: senderId })
+          : api.banChatMember({ chat_id: chatId, user_id: senderId }),
+      );
+    }
+    return true;
   }
 
   async function start(message: Message) {
@@ -474,5 +551,5 @@ export function createService({
       await display(session, message.chat.id);
     }
   }
-  return { join, callback, start, joinNotice, maintenance };
+  return { join, callback, start, joinNotice, moderate, maintenance };
 }

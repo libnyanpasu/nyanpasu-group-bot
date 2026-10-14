@@ -1,5 +1,6 @@
 import type { Config, ContentPack, Language, Question, Session } from "../types.js";
 import { t } from "./i18n.js";
+import { MAX_SPAM_FIRST_MESSAGES } from "./spam.js";
 
 export type QuizConfig = Config;
 export type QuizSession = Session;
@@ -179,6 +180,25 @@ export function validateConfig(config: unknown): string | null {
   }
   if (config.deleteJoinMessages !== undefined && typeof config.deleteJoinMessages !== "boolean")
     return "deleteJoinMessages must be a boolean.";
+  if (
+    config.spamMode !== undefined &&
+    config.spamMode !== "off" &&
+    config.spamMode !== "new" &&
+    config.spamMode !== "all"
+  )
+    return "spamMode must be off, new or all.";
+  if (
+    config.spamFirstMessages !== undefined &&
+    (typeof config.spamFirstMessages !== "number" ||
+      !Number.isSafeInteger(config.spamFirstMessages) ||
+      config.spamFirstMessages < 1 ||
+      config.spamFirstMessages > MAX_SPAM_FIRST_MESSAGES)
+  )
+    return `spamFirstMessages must be an integer between 1 and ${MAX_SPAM_FIRST_MESSAGES}.`;
+  for (const key of ["spamBan", "spamCas"] as const) {
+    if (config[key] !== undefined && typeof config[key] !== "boolean")
+      return `${key} must be a boolean.`;
+  }
   return null;
 }
 

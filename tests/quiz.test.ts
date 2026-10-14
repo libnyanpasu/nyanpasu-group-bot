@@ -92,6 +92,18 @@ function skipToIndex(session: Session, target: number) {
 }
 
 describe("quiz config and private content pack validation", () => {
+  it("validates advertising filter settings", () => {
+    expect(validateConfig({ ...DEFAULT_CONFIG, spamMode: "new", spamFirstMessages: 3 })).toBeNull();
+    expect(validateConfig({ ...DEFAULT_CONFIG, spamMode: "some" })).toMatch(/spamMode/);
+    expect(validateConfig({ ...DEFAULT_CONFIG, spamFirstMessages: 0 })).toMatch(
+      /spamFirstMessages/,
+    );
+    expect(validateConfig({ ...DEFAULT_CONFIG, spamFirstMessages: 1.5 })).toMatch(
+      /spamFirstMessages/,
+    );
+    expect(validateConfig({ ...DEFAULT_CONFIG, spamBan: "on" })).toMatch(/spamBan/);
+  });
+
   it("accepts the disabled default config and enforces config bounds", () => {
     expect(DEFAULT_CONFIG).toEqual({
       language: "cn",

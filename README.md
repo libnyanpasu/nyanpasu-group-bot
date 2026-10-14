@@ -75,7 +75,7 @@ pnpm webhook:set https://nyanpasu-group-bot.<your-subdomain>.workers.dev
 pnpm webhook:info
 ```
 
-The helper registers `/webhook`, the three required update types and the secret header without dropping pending updates. A custom HTTPS domain also works. Do not put interactive Cloudflare Access in front of the Telegram webhook.
+The helper registers `/webhook`, the four required update types (`message`, `edited_message`, `callback_query` and `chat_join_request`) and the secret header without dropping pending updates. Rerun `pnpm webhook:set` after upgrading from a version that did not subscribe to `edited_message`. A custom HTTPS domain also works. Do not put interactive Cloudflare Access in front of the Telegram webhook.
 
 6. Import the question bank into the production D1. The checkout is a normal clone of the private question repository (for example `git clone git@github.com:libnyanpasu/nyanpasu-verify-question.git private-content`); it is not part of this repository:
 
@@ -100,7 +100,8 @@ Content changes take effect on the next join request without redeploying the Wor
 
 4. A group administrator starts the bot privately with `/start`, then sends `/verify_invite -100GROUP_ID` to obtain an approval-required invite link.
 5. Optionally send `/verify_config deleteJoinMessages=on` to delete Telegram's "joined the group" service messages. This works independently of `/verify_enable` and requires the bot's delete-messages permission; the bot warns when that permission is missing. `deleteJoinMessages=off` keeps them again, and `deleteJoinMessages=default` follows the Worker-wide `DELETE_JOIN_MESSAGES` variable (see [Deployment](#deployment)).
-6. Share the approval link and revoke old links that admit users without approval. Other administrators can still bypass verification by direct invitation or manual approval; agree on a process for that.
+6. Optionally enable the advertising filter, for example `/verify_config spamMode=new spamFirstMessages=3 spamBan=on spamCas=on`. See [Advertising filter](#advertising-filter).
+7. Share the approval link and revoke old links that admit users without approval. Other administrators can still bypass verification by direct invitation or manual approval; agree on a process for that.
 
 No public group or group username is required. Admin commands are `/verify_help`, `/verify_status`, `/verify_config`, `/verify_enable`, `/verify_disable` and `/verify_invite`; target a group by ID in private chat and omit it inside the group. Questions and rules are managed through private content, not commands. See [Private group setup](docs/private-group-setup.md) for details.
 
@@ -112,14 +113,46 @@ A per-minute Cron Trigger processes a small batch of expired sessions: it declin
 
 The webhook returns 2xx only after processing completes and returns a retryable error when processing fails. Telegram may still deliver updates more than once. Existing sessions keep their private question and rules snapshots across deployments, and `/verify_disable` only stops new sessions: existing verification and maintenance continue.
 
-D1 stores the group configuration, session snapshots and the content bank. Session payloads keep their own question and rules snapshots, so content updates never change in-flight verifications. There is no automatic session-retention cleanup yet, and Workers and D1 free-plan call, CPU and query limits apply; maintenance runs in bounded batches, so consider a queue or a paid plan for busier deployments. See [Platform notes](docs/platform-notes.md).
+D1 stores the group configuration, session snapshots, the content bank, advertising blocklists and per-group message counts for the advertising filter. Session payloads keep their own question and rules snapshots, so content updates never change in-flight verifications. There is no automatic session-retention cleanup yet, and Workers and D1 free-plan call, CPU and query limits apply; maintenance runs in bounded batches, so consider a queue or a paid plan for busier deployments. See [Platform notes](docs/platform-notes.md).
+
+## Advertising filter
+
+The filter deletes group messages that match the private advertising blocklist and can ban their senders. It is independent of join verification and configured per group:
+
+| Option                   | Meaning                                                                                                                 |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `spamMode=off\|new\|all` | `off` (default); `new` inspects each member's first `spamFirstMessages` messages; `all` inspects every message          |
+| `spamFirstMessages=N`    | Messages inspected per member in `new` mode, 1–100 (default 3). Counts restart when a member rejoins                    |
+| `spamBan=on\|off`        | `on` (default) bans senders on ban-tier matches and CAS hits; `off` only deletes, useful for trying out a new blocklist |
+| `spamCas=on\|off`        | `on` (default) checks a sender's first message against the [CAS](https://cas.chat) ban list                             |
+
+A message is checked together with its caption, hidden link targets, inline button labels and URLs, quoted text, forward origin and the sender's names and username. Edited messages are checked again. Before matching, text and blocklist entries are folded the same way: NFKC (full-width, circled and styled characters), lower case, Cyrillic/Greek look-alikes of Latin letters, and removal of everything except letters and digits, so spacing, punctuation, emoji and zero-width characters cannot split a keyword. Traditional Chinese is not converted; list both forms when needed. Messages whose Han characters are mostly separated by spaces (`加 微 信 领 钱`) are deleted as keyword evasion.
+
+- **Ban tier** (`ban`): delete and ban (`banChatMember`, or `banChatSenderChat` for channel identities).
+- **Delete tier** (`delete`) and the spacing rule: delete only.
+- Administrators, anonymous administrators and automatic forwards from the linked channel are exempt. Admin status is looked up only after a match.
+- The bot needs the delete-messages permission, plus ban-users when `spamBan=on`; `/verify_config` warns about missing rights. Permanent Telegram refusals are ignored, while rate limits and server errors fail the webhook so Telegram retries.
+- `new` mode starts counting when the filter first sees a member, so existing members are inspected for their next N messages after enabling it.
+
+The blocklist lives in the private content checkout as `blocklists/default.json` and is synced to D1 with `pnpm content:push`; it is never part of this public repository or the Worker bundle. Each Worker isolate caches it for up to a minute.
+
+```json
+{
+  "$schema": "../schemas/blocklist.schema.json",
+  "version": "2026-10",
+  "ban": ["example ban phrase", "=example whole message"],
+  "delete": ["example suspicious phrase"]
+}
+```
+
+Entries match as substrings after normalization and must keep at least two letters or digits; an entry starting with `=` must equal a whole text. Keep the ban tier to phrases that do not occur in normal chat. The detection approach draws on [tg-spam](https://github.com/umputun/tg-spam) (MIT), [xiaomaoJT/TgBot](https://github.com/xiaomaoJT/TgBot) and [bayes_spam_sniper](https://github.com/ramsayleung/bayes_spam_sniper); no code or word lists are copied from them.
 
 ## Content management
 
-Questions, rules and pack manifests live in D1 (`packs`, `rules` and `questions` tables) and are edited in a local checkout of the private question repository. The checkout keeps the JSON layout the schemas describe: `packs/<id>.json`, `rules/<id>.json` and `questions/<type>/<id>.json`; a `default` pack is required. JSON Schemas provide editor completion, and the CLI validates fields, references, unique IDs, answer indexes and bilingual message lengths with the same validator the Worker uses. Rules text is never truncated.
+Questions, rules and pack manifests live in D1 (`packs`, `rules` and `questions` tables) and are edited in a local checkout of the private question repository. The checkout keeps the JSON layout the schemas describe: `packs/<id>.json`, `rules/<id>.json` and `questions/<type>/<id>.json`, plus optional `blocklists/<id>.json` advertising blocklists; a `default` pack is required. JSON Schemas provide editor completion, and the CLI validates fields, references, unique IDs, answer indexes and bilingual message lengths with the same validator the Worker uses. Rules text is never truncated.
 
 ```sh
-pnpm content:list                  # show the packs, question types and rules in local D1
+pnpm content:list                  # show the packs, question types, rules and blocklists in local D1
 pnpm content:push                  # import the checkout into local D1 (upsert)
 pnpm content:push --prune          # also delete D1 rows that are absent from the checkout
 pnpm content:push --remote         # import into the production D1 (requires wrangler login)
@@ -127,7 +160,7 @@ pnpm content:pull --dir <path>     # export D1 content into a directory
 pnpm content:pull --dir <path> --force  # overwrite existing files in the target directory
 ```
 
-Local D1 is the default target; `--remote` is required for production. `push` upserts only, so pass `--prune` to mirror deletions, and `--dir` selects another checkout. `pull` refuses to overwrite an existing checkout without `--force`, restores the `$schema` markers and runs oxfmt so exported files match the checkout format. Invalid banks are rejected before anything is written.
+Local D1 is the default target; `--remote` is required for production. Blocklists are pushed and pulled with the packs, except when `push` is given explicit pack ids. `push` upserts only, so pass `--prune` to mirror deletions, and `--dir` selects another checkout. `pull` refuses to overwrite an existing checkout without `--force`, restores the `$schema` markers and runs oxfmt so exported files match the checkout format. Invalid banks are rejected before anything is written.
 
 The schemas are kept in sync with the checkout:
 

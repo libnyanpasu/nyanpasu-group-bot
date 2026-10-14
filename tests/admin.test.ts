@@ -58,7 +58,10 @@ type AdminApi = Pick<
   BotApi,
   "sendMessage" | "getMe" | "getChat" | "getChatMember" | "createChatInviteLink"
 >;
-type AdminRepository = Pick<Repository, "getConfig" | "saveConfig" | "getContentPack">;
+type AdminRepository = Pick<
+  Repository,
+  "getConfig" | "saveConfig" | "getContentPack" | "getBlocklist"
+>;
 
 interface SetupOptions {
   config?: Partial<Config> | null;
@@ -104,6 +107,11 @@ function setup({
     getContentPack: vi
       .fn<Repository["getContentPack"]>()
       .mockImplementation(async (id) => (pack && pack.id === id ? pack : null)),
+    getBlocklist: vi.fn<Repository["getBlocklist"]>().mockResolvedValue({
+      version: "blocklist-test-1",
+      ban: ["TEST ONLY banned phrase"],
+      delete: [],
+    }),
   } satisfies AdminRepository;
   const handle = createAdmin({ api, repository, defaultDeleteJoinMessages });
   return { api, repository, handle };
@@ -162,6 +170,8 @@ describe("createAdmin", () => {
     expect(status).toContain(String(GROUP_ID));
     expect(status).toContain("test-1");
     expect(status).toContain("rules-test-1");
+    expect(status).toContain("blocklist-test-1");
+    expect(status).not.toContain("banned phrase");
     expect(status).not.toContain("question 1");
     expect(status).not.toContain("TEST ONLY: synthetic test rules");
     expect(status).not.toContain("TEST ONLY: answer one");
@@ -266,7 +276,7 @@ describe("createAdmin", () => {
 
     await handle(groupMessage("/verify_config"));
     expect(api.sendMessage).toHaveBeenLastCalledWith(
-      expect.objectContaining({ text: expect.stringMatching(/Delete join messages: Off$/) }),
+      expect.objectContaining({ text: expect.stringMatching(/Delete join messages: Off\n/) }),
     );
 
     await handle(groupMessage("/verify_config deleteJoinMessages=default"));
@@ -278,6 +288,51 @@ describe("createAdmin", () => {
       }),
     );
   });
+
+  it("configures the advertising filter and lists missing bot permissions", async () => {
+    const { api, repository, handle } = setup({
+      botMember: { status: "administrator", can_invite_users: true, can_delete_messages: true },
+    });
+
+    await handle(
+      groupMessage("/verify_config spamMode=new spamFirstMessages=5 spamBan=on spamCas=off"),
+    );
+
+    expect(repository.saveConfig).toHaveBeenCalledWith(
+      GROUP_ID,
+      expect.objectContaining({
+        spamMode: "new",
+        spamFirstMessages: 5,
+        spamBan: true,
+        spamCas: false,
+      }),
+    );
+    const reply = api.sendMessage.mock.calls[0][0].text;
+    expect(reply).toContain("仅检查新成员前 5 条消息");
+    expect(reply).toContain("封禁成员");
+    expect(reply).not.toContain("删除消息、");
+  });
+
+  it("does not ask for ban rights when the filter only deletes", async () => {
+    const { api, handle } = setup({
+      botMember: { status: "administrator", can_invite_users: true, can_delete_messages: true },
+    });
+
+    await handle(groupMessage("/verify_config spamMode=all spamBan=off"));
+
+    expect(api.sendMessage.mock.calls[0][0].text).not.toContain("缺少以下权限");
+  });
+
+  it.each(["spamMode=on", "spamFirstMessages=0", "spamFirstMessages=101", "spamCas=yes"])(
+    "rejects invalid advertising filter option %s",
+    async (option) => {
+      const { repository, handle } = setup();
+
+      await handle(groupMessage(`/verify_config ${option}`));
+
+      expect(repository.saveConfig).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects non on/off join-message deletion values", async () => {
     const { repository, handle } = setup();

@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
-import { groups, packs, questions, rules, sessions } from "../schema.js";
+import { blocklists, groups, members, packs, questions, rules, sessions } from "../schema.js";
 import type { Config, ContentPack, Question, Repository, Session } from "../types.js";
 
 const USER_SESSION_LIMIT = 20;
@@ -28,6 +28,12 @@ function configuration(config: Config): Config {
     ...(typeof config.deleteJoinMessages === "boolean"
       ? { deleteJoinMessages: config.deleteJoinMessages }
       : {}),
+    ...(config.spamMode !== undefined ? { spamMode: config.spamMode } : {}),
+    ...(config.spamFirstMessages !== undefined
+      ? { spamFirstMessages: config.spamFirstMessages }
+      : {}),
+    ...(typeof config.spamBan === "boolean" ? { spamBan: config.spamBan } : {}),
+    ...(typeof config.spamCas === "boolean" ? { spamCas: config.spamCas } : {}),
   };
 }
 
@@ -141,6 +147,46 @@ export function createRepository<
 
     async getContentPack(id) {
       return assembleContentPack(database, id);
+    },
+
+    async getBlocklist(id) {
+      const [row] = await database
+        .select({ payload: blocklists.payload })
+        .from(blocklists)
+        .where(eq(blocklists.id, id))
+        .limit(1)
+        .all();
+      return row?.payload ?? null;
+    },
+
+    async getMemberMessages(groupId, senderId) {
+      const [row] = await database
+        .select({ messages: members.messages })
+        .from(members)
+        .where(and(eq(members.groupId, groupId), eq(members.userId, senderId)))
+        .limit(1)
+        .all();
+      return row?.messages ?? 0;
+    },
+
+    async recordMemberMessage(groupId, senderId, at) {
+      // A single upsert keeps concurrent webhook deliveries from losing increments.
+      await database
+        .insert(members)
+        .values({ groupId, userId: senderId, messages: 1, updatedAt: at })
+        .onConflictDoUpdate({
+          target: [members.groupId, members.userId],
+          set: { messages: sql`${members.messages} + 1`, updatedAt: at },
+        })
+        .run();
+    },
+
+    async resetMembers(groupId, senderIds) {
+      if (senderIds.length === 0) return;
+      await database
+        .delete(members)
+        .where(and(eq(members.groupId, groupId), inArray(members.userId, senderIds)))
+        .run();
     },
 
     async getSession(key) {

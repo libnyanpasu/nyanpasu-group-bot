@@ -7,7 +7,12 @@ const projectDirectory = resolve(scriptDirectory, "..");
 const sourceDirectory = join(projectDirectory, "schemas");
 const privateContentDirectory = join(projectDirectory, "private-content");
 const targetDirectory = join(privateContentDirectory, "schemas");
-const schemaFiles = ["question.schema.json", "pack.schema.json", "rules.schema.json"];
+const schemaFiles = [
+  "question.schema.json",
+  "pack.schema.json",
+  "rules.schema.json",
+  "blocklist.schema.json",
+];
 const checkOnly = process.argv.slice(2).includes("--check");
 const invalidArguments = process.argv.slice(2).filter((argument) => argument !== "--check");
 
