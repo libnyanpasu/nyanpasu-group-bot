@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "广告过滤黑名单",
-  "description": "群消息广告过滤词库。匹配前消息和词条都会做同样的归一化：NFKC（全角、带圈和花体字符）、转小写、把西里尔/希腊字母中的拉丁形近字还原，并去掉除字母和数字以外的所有字符（空格、标点、emoji、零宽字符）。词条按子串匹配；以 = 开头的词条要求整段文本完全相等。机器人只读取 blocklists/default.json。",
+  "title": "垃圾消息过滤黑名单",
+  "description": "群垃圾消息过滤词库。匹配前消息和词条都会做同样的归一化：NFKC（全角、带圈和花体字符）、转小写、把西里尔/希腊字母中的拉丁形近字还原，并去掉除字母和数字以外的所有字符（空格、标点、emoji、零宽字符）。词条按子串匹配；以 = 开头的词条要求整段文本完全相等。机器人只读取 blocklists/default.json。",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "ban", "delete"],
@@ -21,7 +21,7 @@
       "type": "array",
       "maxItems": 5000,
       "uniqueItems": true,
-      "description": "封禁级词条：命中后删除消息并封禁发送者（群里设置 spamBan=off 时只删除）。只放几乎不会出现在正常聊天中的广告话术。",
+      "description": "封禁级词条：命中后删除消息并封禁发送者（群里设置 spamBan=off 时只删除）。只放几乎不会出现在正常聊天中的垃圾消息话术。",
       "items": {
         "type": "string",
         "minLength": 2,

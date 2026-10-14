@@ -1,0 +1,30 @@
+{
+  "$comment": "Upstream word lists merged by `pnpm blocklist:build`. Pin every URL to a commit so the output is reproducible; see README › Blocklist sources.",
+  "sources": [
+    {
+      "id": "tg-spam",
+      "project": "https://github.com/umputun/tg-spam",
+      "license": "MIT",
+      "files": [
+        {
+          "url": "https://raw.githubusercontent.com/umputun/tg-spam/dab2a255b1b57cd2c5033de7e62b48407ece2ee8/data/stop-words.txt",
+          "format": "lines",
+          "tier": "ban"
+        }
+      ]
+    },
+    {
+      "id": "xiaomaoJT-TgBot",
+      "project": "https://github.com/xiaomaoJT/TgBot",
+      "license": "none declared; used with attribution and removal on request",
+      "files": [
+        {
+          "url": "https://raw.githubusercontent.com/xiaomaoJT/TgBot/d1900f930d145ad97202da5e58f12497accd4594/Apps%20Script/MaoBot%40OfficialVersion/DB/XiaoMaoBot_DB.xlsx",
+          "format": "xiaomao-xlsx",
+          "sheet": "sensitive_words",
+          "columns": { "A": "ban", "B": "delete" }
+        }
+      ]
+    }
+  ]
+}

@@ -210,8 +210,13 @@ export async function loadContentValidator() {
   return (await loadWorkerModule("src/lib/quiz.ts")).validateContentPack;
 }
 
+/** The Worker's spam-filter module: normalization, validation and matching. */
+export function loadSpamModule() {
+  return loadWorkerModule("src/lib/spam.ts");
+}
+
 export async function loadBlocklistValidator() {
-  return (await loadWorkerModule("src/lib/spam.ts")).validateBlocklist;
+  return (await loadSpamModule()).validateBlocklist;
 }
 
 function targetFlags(options) {

@@ -1313,7 +1313,7 @@ describe("join notice cleanup", () => {
   });
 });
 
-describe("advertising filter", () => {
+describe("spam filter", () => {
   const blocklist: BlocklistDocument = {
     version: "test-blocklist",
     ban: ["日入过万", "=加我"],

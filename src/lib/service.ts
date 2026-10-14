@@ -468,7 +468,7 @@ export function createService({
 
   /**
    * Handle a "joined the group" service message: rejoining members become new again for
-   * the advertising filter, and the notice is deleted when the group or Worker default opts in.
+   * the spam filter, and the notice is deleted when the group or Worker default opts in.
    */
   async function joinNotice(message: Message) {
     if (!groupChat(message)) return;
@@ -484,7 +484,7 @@ export function createService({
   }
 
   /**
-   * Apply the group's advertising filter. Returns true when the message was removed.
+   * Apply the group's spam filter. Returns true when the message was removed.
    * Edits are inspected but neither count as new messages nor trigger CAS lookups.
    */
   async function moderate(message: Message, { edited = false } = {}): Promise<boolean> {

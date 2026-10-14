@@ -1,5 +1,5 @@
 export type Language = "en" | "cn";
-/** Which group messages the advertising filter inspects. */
+/** Which group messages the spam filter inspects. */
 export type SpamMode = "off" | "new" | "all";
 export interface Question {
   id: string;
@@ -19,7 +19,7 @@ export interface Config {
   cooldownSeconds: number;
   /** Delete Telegram's "joined the group" service messages; absent inherits DELETE_JOIN_MESSAGES. */
   deleteJoinMessages?: boolean;
-  /** Advertising filter scope; absent means off. */
+  /** Spam filter scope; absent means off. */
   spamMode?: SpamMode;
   /** In "new" mode, how many messages per member are inspected; absent means 3. */
   spamFirstMessages?: number;
@@ -41,7 +41,7 @@ export interface PackDocument {
   rules: string;
   questionTypes: string[];
 }
-/** An advertising blocklist, mirroring `blocklists/<id>.json` in content checkouts. */
+/** A spam blocklist, mirroring `blocklists/<id>.json` in content checkouts. */
 export interface BlocklistDocument {
   version: string;
   /** Delete the message and ban the sender. */

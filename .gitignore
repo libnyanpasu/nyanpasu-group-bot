@@ -9,3 +9,6 @@ dist/
 .env
 .env.*
 !.env.example
+
+# Generated spam blocklists (pnpm blocklist:build); only blocklist/ sources and overrides are tracked.
+blocklists/

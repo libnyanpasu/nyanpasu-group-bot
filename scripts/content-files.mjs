@@ -9,7 +9,7 @@ import Ajv from "ajv";
  * @property {{ id: string, document: import("../src/types.js").RulesDocument }[]} rules
  * @property {{ type: string, id: string, document: import("../src/types.js").Question }[]} questions
  * @property {{ id: string, document: import("../src/types.js").BlocklistDocument }[]} [blocklists]
- *   Advertising blocklists; `undefined` means "leave D1 blocklists untouched".
+ *   Spam blocklists; `undefined` means "leave D1 blocklists untouched".
  */
 
 const schemaRoot = fileURLToPath(new URL("../schemas/", import.meta.url));
@@ -134,7 +134,7 @@ export function readContentDocuments(source, required) {
       }
     }
   }
-  // Blocklists are optional so checkouts without advertising filtering stay valid.
+  // Blocklists are optional so checkouts without spam filtering stay valid.
   const blocklistDirectory = resolve(root, "blocklists");
   const blocklists = existsSync(blocklistDirectory)
     ? jsonFiles(root, blocklistDirectory).map((path) => ({

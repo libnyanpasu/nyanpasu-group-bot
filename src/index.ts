@@ -75,7 +75,7 @@ function parseChat(value: unknown): Chat | null {
   };
 }
 
-// The fields below only feed the advertising filter. They are parsed leniently so an
+// The fields below only feed the spam filter. They are parsed leniently so an
 // unexpected shape loses filter input instead of failing (and redelivering) the update.
 function parseEntities(value: unknown): MessageEntity[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -267,7 +267,7 @@ app.post("/webhook", async (context) => {
     } else if (update.kind === "edited_message") {
       await runtime.service.moderate(update.value, { edited: true });
     } else if (update.kind === "message") {
-      // Filter first so advertising cannot hide behind an admin command prefix.
+      // Filter first so spam cannot hide behind an admin command prefix.
       if (await runtime.service.moderate(update.value)) return context.body(null, 200);
       const handled = await runtime.admin.handle(update.value);
       if (!handled && /^\/(?:start|help)(?:\s|$)/.test(update.value.text ?? "")) {

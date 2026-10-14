@@ -289,7 +289,7 @@ describe("createAdmin", () => {
     );
   });
 
-  it("configures the advertising filter and lists missing bot permissions", async () => {
+  it("configures the spam filter and lists missing bot permissions", async () => {
     const { api, repository, handle } = setup({
       botMember: { status: "administrator", can_invite_users: true, can_delete_messages: true },
     });
@@ -324,7 +324,7 @@ describe("createAdmin", () => {
   });
 
   it.each(["spamMode=on", "spamFirstMessages=0", "spamFirstMessages=101", "spamCas=yes"])(
-    "rejects invalid advertising filter option %s",
+    "rejects invalid spam filter option %s",
     async (option) => {
       const { repository, handle } = setup();
 

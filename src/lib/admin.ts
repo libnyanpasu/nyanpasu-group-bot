@@ -112,7 +112,7 @@ function packIsUsable(pack: ContentPack | null | undefined): pack is ContentPack
 }
 
 export function createAdmin({ api, repository, defaultDeleteJoinMessages = false }: AdminOptions) {
-  /** List bot permissions the advertising filter needs but lacks, in the reply language. */
+  /** List bot permissions the spam filter needs but lacks, in the reply language. */
   async function missingSpamPermissions(chatId: number, ban: boolean, language: Language) {
     const me = await api.getMe();
     const botMember = await api.getChatMember({ chat_id: chatId, user_id: me.id });

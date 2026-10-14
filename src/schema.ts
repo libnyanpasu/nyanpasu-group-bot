@@ -39,7 +39,7 @@ export const blocklists = sqliteTable("blocklists", {
   payload: text("payload", { mode: "json" }).$type<BlocklistDocument>().notNull(),
 });
 
-/** Per-group message counts that let the advertising filter stop inspecting trusted members. */
+/** Per-group message counts that let the spam filter stop inspecting trusted members. */
 export const members = sqliteTable(
   "members",
   {
