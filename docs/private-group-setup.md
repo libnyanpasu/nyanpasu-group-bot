@@ -10,6 +10,7 @@
 6. Alternatively, after enabling verification, an authorized group admin can start the bot in a private chat and send `/verify_invite -100GROUP_ID`. The bot creates an approval-request link and returns it only in that private chat. A group `/verify_invite` command only explains this private workflow; it never posts the link to the group.
 
 7. Optional: `/verify_config deleteJoinMessages=on` makes the bot delete Telegram’s “joined the group” service messages; `deleteJoinMessages=off` turns it off. It works whether or not verification is enabled. Grant the bot the delete-messages permission as well; without it the bot replies with a warning and the messages stay. Groups that never set this option, or that run `deleteJoinMessages=default`, follow the Worker variable `DELETE_JOIN_MESSAGES` (`true`/`false`, off by default).
+8. Optional spam filter: `/verify_config spamMode=new spamFirstMessages=3 spamBan=on spamCas=on` deletes messages that match the private blocklist (`blocklists/default.json` in the content checkout) and bans senders on ban-tier matches or CAS hits. Use `spamMode=all` to inspect every message, and `spamBan=off` to only delete while trying out a new blocklist. Options left unset, or set to `default`, follow the Worker variables `SPAM_MODE`, `SPAM_FIRST_MESSAGES`, `SPAM_BAN` and `SPAM_CAS`. Grant the bot the delete-messages and ban-users permissions. Rerun `pnpm webhook:set` so Telegram also sends edited messages. See the README’s “Spam filter” section.
 
 This uses Telegram’s ordinary join-request approval flow. It does not require a third-party “Guard Bot” or a separate captcha service. Existing members are not re-verified just by enabling the bot; this flow applies to incoming join requests.
 
@@ -23,6 +24,7 @@ This uses Telegram’s ordinary join-request approval flow. It does not require 
 6. 验证已开启后，群管理员也可以先私聊机器人并发送 `/start`，再发送 `/verify_invite -100群组ID`。机器人会创建需要审批的链接，并且只在私聊中返回链接。群内执行 `/verify_invite` 只会提示上述私聊步骤，绝不会把链接发到群里。
 
 7. 可选：`/verify_config deleteJoinMessages=on` 让机器人删除 Telegram 的“某人加入了群组”入群提示，`deleteJoinMessages=off` 关闭。该功能与是否开启验证无关。还需授予机器人“删除消息”权限；缺少权限时机器人会提示，入群提示不会被删除。从未设置过此项、或执行了 `deleteJoinMessages=default` 的群，跟随 Worker 变量 `DELETE_JOIN_MESSAGES`（`true`/`false`，默认关闭）。
+8. 可选的垃圾消息过滤：`/verify_config spamMode=new spamFirstMessages=3 spamBan=on spamCas=on` 会删除命中私有黑名单（内容仓库中的 `blocklists/default.json`）的消息，命中封禁级词条或 CAS 封禁库时同时封禁发送者。`spamMode=all` 检查所有消息；试用新词库时可设 `spamBan=off`，只删不封。未设置或设为 `default` 的选项跟随 Worker 变量 `SPAM_MODE`、`SPAM_FIRST_MESSAGES`、`SPAM_BAN`、`SPAM_CAS`。需要授予机器人“删除消息”和“封禁成员”权限，并重新执行 `pnpm webhook:set`，让 Telegram 推送被编辑的消息。详见 README 的 “Spam filter” 一节。
 
 此流程使用 Telegram 自带的普通入群申请审批，不需要第三方 “Guard Bot” 或单独的验证码服务。仅开启机器人不会重新验证现有成员；流程适用于之后发起的入群申请。
 

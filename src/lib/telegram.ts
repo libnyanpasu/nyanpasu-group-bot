@@ -99,5 +99,7 @@ export function createTelegramApi(token: string, fetcher: typeof fetch = fetch):
     getMe: () => call("getMe", {}),
     getChat: (input) => call("getChat", input),
     getChatMember: (input) => call("getChatMember", input),
+    banChatMember: (input) => call("banChatMember", input),
+    banChatSenderChat: (input) => call("banChatSenderChat", input),
   };
 }

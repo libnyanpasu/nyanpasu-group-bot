@@ -8,8 +8,8 @@
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
     "lint": "oxlint src tests scripts",
-    "fmt": "oxfmt src tests scripts schemas migrations *.json *.jsonc *.md *.ts *.yaml .github .vscode",
-    "fmt:check": "oxfmt --check src tests scripts schemas migrations *.json *.jsonc *.md *.ts *.yaml .github .vscode",
+    "fmt": "oxfmt .",
+    "fmt:check": "oxfmt --check .",
     "content:schemas": "node scripts/sync-content-schemas.mjs",
     "content:schemas:check": "node scripts/sync-content-schemas.mjs --check",
     "test": "vitest run",
@@ -21,6 +21,7 @@
     "content:push": "node scripts/content-cli.mjs push",
     "content:pull": "node scripts/content-cli.mjs pull",
     "content:list": "node scripts/content-cli.mjs list",
+    "blocklist:build": "node scripts/blocklist-build.mjs",
     "webhook:set": "node --env-file-if-exists=.dev.vars scripts/telegram-webhook.ts set",
     "webhook:info": "node --env-file-if-exists=.dev.vars scripts/telegram-webhook.ts info"
   },

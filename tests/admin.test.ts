@@ -3,6 +3,7 @@ import type { BotApi, Config, ContentPack, Member, Message, Repository } from ".
 
 import { createAdmin } from "../src/lib/admin.ts";
 import { DEFAULT_CONFIG } from "../src/lib/quiz.ts";
+import type { SpamSettings } from "../src/lib/spam.ts";
 
 const TEST_OPTIONS = [
   "TEST ONLY: answer one",
@@ -58,7 +59,10 @@ type AdminApi = Pick<
   BotApi,
   "sendMessage" | "getMe" | "getChat" | "getChatMember" | "createChatInviteLink"
 >;
-type AdminRepository = Pick<Repository, "getConfig" | "saveConfig" | "getContentPack">;
+type AdminRepository = Pick<
+  Repository,
+  "getConfig" | "saveConfig" | "getContentPack" | "getBlocklist"
+>;
 
 interface SetupOptions {
   config?: Partial<Config> | null;
@@ -66,6 +70,7 @@ interface SetupOptions {
   botMember?: Member;
   pack?: ContentPack | null;
   defaultDeleteJoinMessages?: boolean;
+  spamDefaults?: SpamSettings;
 }
 
 function setup({
@@ -74,6 +79,7 @@ function setup({
   botMember,
   pack = TEST_PACK,
   defaultDeleteJoinMessages,
+  spamDefaults,
 }: SetupOptions = {}) {
   const storedConfig: Config | null = config ? { ...DEFAULT_CONFIG, ...config } : null;
   const api = {
@@ -104,8 +110,13 @@ function setup({
     getContentPack: vi
       .fn<Repository["getContentPack"]>()
       .mockImplementation(async (id) => (pack && pack.id === id ? pack : null)),
+    getBlocklist: vi.fn<Repository["getBlocklist"]>().mockResolvedValue({
+      version: "blocklist-test-1",
+      ban: ["TEST ONLY banned phrase"],
+      delete: [],
+    }),
   } satisfies AdminRepository;
-  const handle = createAdmin({ api, repository, defaultDeleteJoinMessages });
+  const handle = createAdmin({ api, repository, defaultDeleteJoinMessages, spamDefaults });
   return { api, repository, handle };
 }
 
@@ -162,6 +173,8 @@ describe("createAdmin", () => {
     expect(status).toContain(String(GROUP_ID));
     expect(status).toContain("test-1");
     expect(status).toContain("rules-test-1");
+    expect(status).toContain("blocklist-test-1");
+    expect(status).not.toContain("banned phrase");
     expect(status).not.toContain("question 1");
     expect(status).not.toContain("TEST ONLY: synthetic test rules");
     expect(status).not.toContain("TEST ONLY: answer one");
@@ -266,7 +279,7 @@ describe("createAdmin", () => {
 
     await handle(groupMessage("/verify_config"));
     expect(api.sendMessage).toHaveBeenLastCalledWith(
-      expect.objectContaining({ text: expect.stringMatching(/Delete join messages: Off$/) }),
+      expect.objectContaining({ text: expect.stringMatching(/Delete join messages: Off\n/) }),
     );
 
     await handle(groupMessage("/verify_config deleteJoinMessages=default"));
@@ -277,6 +290,77 @@ describe("createAdmin", () => {
         text: expect.stringContaining("Delete join messages: On (global default)"),
       }),
     );
+  });
+
+  it("configures the spam filter and lists missing bot permissions", async () => {
+    const { api, repository, handle } = setup({
+      botMember: { status: "administrator", can_invite_users: true, can_delete_messages: true },
+    });
+
+    await handle(
+      groupMessage("/verify_config spamMode=new spamFirstMessages=5 spamBan=on spamCas=off"),
+    );
+
+    expect(repository.saveConfig).toHaveBeenCalledWith(
+      GROUP_ID,
+      expect.objectContaining({
+        spamMode: "new",
+        spamFirstMessages: 5,
+        spamBan: true,
+        spamCas: false,
+      }),
+    );
+    const reply = api.sendMessage.mock.calls[0][0].text;
+    expect(reply).toContain("仅检查新成员前 5 条消息");
+    expect(reply).toContain("封禁成员");
+    expect(reply).not.toContain("删除消息、");
+  });
+
+  it("marks inherited spam settings and clears group overrides with =default", async () => {
+    const { api, repository, handle } = setup({
+      config: { language: "en", spamMode: "off", spamCas: false },
+      spamDefaults: { mode: "new", firstMessages: 5, ban: false, cas: true },
+      botMember: { status: "administrator", can_invite_users: true, can_delete_messages: true },
+    });
+
+    await handle(groupMessage("/verify_config"));
+    const before = api.sendMessage.mock.calls[0][0].text;
+    expect(before).toContain("Spam filter: Off\n");
+    expect(before).toContain("Ban on ban-list matches: Off (global default)");
+    expect(before).toMatch(/CAS ban list: Off$/);
+
+    await handle(groupMessage("/verify_config spamMode=default spamCas=default"));
+    const saved = repository.saveConfig.mock.calls[0][1];
+    expect(Object.hasOwn(saved, "spamMode")).toBe(false);
+    expect(Object.hasOwn(saved, "spamCas")).toBe(false);
+    const after = api.sendMessage.mock.calls[1][0].text;
+    expect(after).toContain("first 5 messages of new members (global default)");
+    expect(after).toContain("CAS ban list: On (global default)");
+    expect(after).not.toContain("cannot fully work");
+  });
+
+  it("does not ask for ban rights when the filter only deletes", async () => {
+    const { api, handle } = setup({
+      botMember: { status: "administrator", can_invite_users: true, can_delete_messages: true },
+    });
+
+    await handle(groupMessage("/verify_config spamMode=all spamBan=off"));
+
+    expect(api.sendMessage.mock.calls[0][0].text).not.toContain("缺少以下权限");
+  });
+
+  it.each([
+    "spamMode=on",
+    "spamFirstMessages=0",
+    "spamFirstMessages=101",
+    "spamCas=yes",
+    "spamBan=default=on",
+  ])("rejects invalid spam filter option %s", async (option) => {
+    const { repository, handle } = setup();
+
+    await handle(groupMessage(`/verify_config ${option}`));
+
+    expect(repository.saveConfig).not.toHaveBeenCalled();
   });
 
   it("rejects non on/off join-message deletion values", async () => {

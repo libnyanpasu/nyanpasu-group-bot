@@ -5,7 +5,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
-import { assembleContentPacks, readContentDocuments } from "./content-files.mjs";
+import {
+  assembleContentPacks,
+  readContentDocuments,
+  validateBlocklists,
+} from "./content-files.mjs";
 
 const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -15,7 +19,9 @@ const USAGE = `Usage: node scripts/content-cli.mjs <push|pull|list> [options] [p
 
   push   Import the local content checkout into D1 (upsert; --prune mirrors deletes).
   pull   Export D1 content back into the checkout directory.
-  list   Show the packs, question types and rules stored in D1.
+  list   Show the packs, question types, rules and blocklists stored in D1.
+
+Blocklists are synced with every push and pull, except when pushing selected pack ids.
 
 Options:
   --remote     Target the remote D1 database (default: local D1)
@@ -56,6 +62,18 @@ export function buildContentSql(documents, { prune = false, updatedAt = Date.now
       `INSERT INTO questions (type, id, payload, updated_at) VALUES (${sqlString(type)}, ${sqlString(id)}, ${payload(document)}, ${timestamp}) ON CONFLICT(type, id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at;`,
     );
   }
+  for (const { id, document } of documents.blocklists ?? []) {
+    statements.push(
+      `INSERT INTO blocklists (id, payload, updated_at) VALUES (${sqlString(id)}, ${payload(document)}, ${timestamp}) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at;`,
+    );
+  }
+  if (prune && documents.blocklists) {
+    if (documents.blocklists.length === 0) statements.push("DELETE FROM blocklists;");
+    else
+      statements.push(
+        `DELETE FROM blocklists WHERE id NOT IN (${documents.blocklists.map(({ id }) => sqlString(id)).join(", ")});`,
+      );
+  }
   if (prune) {
     if (documents.packs.length === 0) statements.push("DELETE FROM packs;");
     else
@@ -91,7 +109,9 @@ export function buildContentSql(documents, { prune = false, updatedAt = Date.now
  */
 export function exportContentFiles(directory, documents, { force = false } = {}) {
   const target = resolve(directory);
-  const hasContent = ["packs", "rules", "questions"].some((name) => existsSync(join(target, name)));
+  const hasContent = ["packs", "rules", "questions", "blocklists"].some((name) =>
+    existsSync(join(target, name)),
+  );
   if (hasContent && !force) {
     throw new Error(
       `Refusing to overwrite existing content in ${target}; pass --force to overwrite matching files.`,
@@ -111,10 +131,14 @@ export function exportContentFiles(directory, documents, { force = false } = {})
   for (const { id, document } of documents.packs) {
     write(join("packs", `${id}.json`), "../schemas/pack.schema.json", document);
   }
+  for (const { id, document } of documents.blocklists ?? []) {
+    write(join("blocklists", `${id}.json`), "../schemas/blocklist.schema.json", document);
+  }
   return {
     packs: documents.packs.length,
     rules: documents.rules.length,
     questions: documents.questions.length,
+    blocklists: documents.blocklists?.length ?? 0,
   };
 }
 
@@ -156,26 +180,43 @@ export function parseArguments(argv) {
   return options;
 }
 
-let validatorPromise;
+const modulePromises = new Map();
 
-/** Bundle the shared validator so the CLI checks exactly what the Worker checks. */
-export function loadContentValidator() {
-  validatorPromise ??= (async () => {
-    const bundle = await build({
-      entryPoints: [resolve(root, "src/lib/quiz.ts")],
-      bundle: true,
-      format: "esm",
-      platform: "browser",
-      target: "es2022",
-      write: false,
-      logLevel: "silent",
-    });
-    const module = await import(
-      `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`
+/** Bundle a Worker source module so the CLI checks exactly what the Worker checks. */
+function loadWorkerModule(path) {
+  if (!modulePromises.has(path)) {
+    modulePromises.set(
+      path,
+      (async () => {
+        const bundle = await build({
+          entryPoints: [resolve(root, path)],
+          bundle: true,
+          format: "esm",
+          platform: "browser",
+          target: "es2022",
+          write: false,
+          logLevel: "silent",
+        });
+        return import(
+          `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`
+        );
+      })(),
     );
-    return module.validateContentPack;
-  })();
-  return validatorPromise;
+  }
+  return modulePromises.get(path);
+}
+
+export async function loadContentValidator() {
+  return (await loadWorkerModule("src/lib/quiz.ts")).validateContentPack;
+}
+
+/** The Worker's spam-filter module: normalization, validation and matching. */
+export function loadSpamModule() {
+  return loadWorkerModule("src/lib/spam.ts");
+}
+
+export async function loadBlocklistValidator() {
+  return (await loadSpamModule()).validateBlocklist;
 }
 
 function targetFlags(options) {
@@ -241,7 +282,13 @@ async function formatContentDirectory(target) {
   try {
     await execFileAsync(
       "pnpm",
-      ["exec", "oxfmt", join(target, "packs"), join(target, "rules"), join(target, "questions")],
+      [
+        "exec",
+        "oxfmt",
+        ...["packs", "rules", "questions", "blocklists"]
+          .map((name) => join(target, name))
+          .filter((path) => existsSync(path)),
+      ],
       { cwd: root, maxBuffer: 32 * 1024 * 1024 },
     );
   } catch {
@@ -265,9 +312,11 @@ async function push(options) {
       packs,
       rules: documents.rules.filter(({ id }) => rules.has(id)),
       questions: documents.questions.filter(({ type }) => types.has(type)),
+      blocklists: undefined,
     };
   }
   const assembled = assembleContentPacks(selected, validateContentPack);
+  validateBlocklists(selected, await loadBlocklistValidator());
   if (options.packs.length === 0 && !assembled.some(({ id }) => id === "default")) {
     throw new Error("Private content must include the default pack.");
   }
@@ -296,7 +345,7 @@ async function push(options) {
     else console.log(`  replaced ${id}@${document.version} (version unchanged)`);
   }
   console.log(
-    `Wrote ${selected.packs.length} pack(s), ${selected.rules.length} rules document(s), ${selected.questions.length} question(s).`,
+    `Wrote ${selected.packs.length} pack(s), ${selected.rules.length} rules document(s), ${selected.questions.length} question(s), ${selected.blocklists?.length ?? 0} blocklist(s).`,
   );
   if (!options.prune) {
     const local = new Set(documents.packs.map(({ id }) => id));
@@ -318,7 +367,9 @@ async function pull(options) {
     "SELECT type, id, payload FROM questions ORDER BY type, id",
     options,
   );
+  const blocklists = await selectRows("SELECT id, payload FROM blocklists ORDER BY id", options);
   const documents = {
+    blocklists: blocklists.map((row) => ({ id: row.id, document: parsePayload(row.payload) })),
     packs: packs.map((row) => ({ id: row.id, document: parsePayload(row.payload) })),
     rules: rules.map((row) => ({ id: row.id, document: parsePayload(row.payload) })),
     questions: questions.map((row) => ({
@@ -331,11 +382,12 @@ async function pull(options) {
   if (!assembled.some(({ id }) => id === "default")) {
     throw new Error("D1 content is missing the default pack.");
   }
+  validateBlocklists(documents, await loadBlocklistValidator());
   const written = exportContentFiles(options.directory, documents, { force: options.force });
   await formatContentDirectory(resolve(options.directory));
   console.log(`Target: ${targetName(options)} (${DATABASE})`);
   console.log(
-    `Exported ${written.packs} pack(s), ${written.rules} rules document(s), ${written.questions} question(s) to ${resolve(options.directory)}.`,
+    `Exported ${written.packs} pack(s), ${written.rules} rules document(s), ${written.questions} question(s), ${written.blocklists} blocklist(s) to ${resolve(options.directory)}.`,
   );
 }
 
@@ -360,6 +412,17 @@ async function list(options) {
   const counts = questions.map((row) => `${row.type}=${row.count}`).join(" ") || "none";
   console.log(`  questions: ${counts}`);
   console.log(`  rules: ${rules[0]?.count ?? 0}`);
+  const blocklists = await selectRows(
+    "SELECT id, payload, updated_at FROM blocklists ORDER BY id",
+    options,
+  );
+  for (const row of blocklists) {
+    const document = parsePayload(row.payload);
+    console.log(
+      `  blocklist ${row.id}@${document.version} ban=${document.ban.length} delete=${document.delete.length} (updated ${formatTimestamp(row.updated_at)})`,
+    );
+  }
+  if (blocklists.length === 0) console.log("  blocklists: none");
 }
 
 async function main() {

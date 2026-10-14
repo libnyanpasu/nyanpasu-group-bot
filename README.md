@@ -66,7 +66,7 @@ pnpm exec wrangler secret put WEBHOOK_SECRET
 
 Enter values interactively. `BOT_TOKEN` is the ordinary BotFather Bot API token; generate `WEBHOOK_SECRET` as a random URL-safe string, for example with `openssl rand -hex 32`. Never put tokens in `wrangler.jsonc`, source code, command-line arguments or chat logs. `.dev.vars` is local-only and is not automatically deployed as production secrets.
 
-Optionally set `DELETE_JOIN_MESSAGES` (`true` or `false`, default `false` in `wrangler.jsonc` `vars`) to delete "joined the group" service messages in every group that has not chosen its own `deleteJoinMessages` setting. It is not a secret; edit `wrangler.jsonc` and redeploy, or override it locally in `.dev.vars`.
+Optionally set `DELETE_JOIN_MESSAGES` (`true` or `false`, default `false` in `wrangler.jsonc` `vars`) to delete "joined the group" service messages in every group that has not chosen its own `deleteJoinMessages` setting. The `SPAM_*` variables set spam filter defaults the same way; see [Spam filter](#spam-filter). It is not a secret; edit `wrangler.jsonc` and redeploy, or override it locally in `.dev.vars`.
 
 5. Put the same two values in the ignored `.dev.vars` and register the webhook:
 
@@ -75,7 +75,7 @@ pnpm webhook:set https://nyanpasu-group-bot.<your-subdomain>.workers.dev
 pnpm webhook:info
 ```
 
-The helper registers `/webhook`, the three required update types and the secret header without dropping pending updates. A custom HTTPS domain also works. Do not put interactive Cloudflare Access in front of the Telegram webhook.
+The helper registers `/webhook`, the four required update types (`message`, `edited_message`, `callback_query` and `chat_join_request`) and the secret header without dropping pending updates. Rerun `pnpm webhook:set` after upgrading from a version that did not subscribe to `edited_message`. A custom HTTPS domain also works. Do not put interactive Cloudflare Access in front of the Telegram webhook.
 
 6. Import the question bank into the production D1. The checkout is a normal clone of the private question repository (for example `git clone git@github.com:libnyanpasu/nyanpasu-verify-question.git private-content`); it is not part of this repository:
 
@@ -100,7 +100,8 @@ Content changes take effect on the next join request without redeploying the Wor
 
 4. A group administrator starts the bot privately with `/start`, then sends `/verify_invite -100GROUP_ID` to obtain an approval-required invite link.
 5. Optionally send `/verify_config deleteJoinMessages=on` to delete Telegram's "joined the group" service messages. This works independently of `/verify_enable` and requires the bot's delete-messages permission; the bot warns when that permission is missing. `deleteJoinMessages=off` keeps them again, and `deleteJoinMessages=default` follows the Worker-wide `DELETE_JOIN_MESSAGES` variable (see [Deployment](#deployment)).
-6. Share the approval link and revoke old links that admit users without approval. Other administrators can still bypass verification by direct invitation or manual approval; agree on a process for that.
+6. Optionally enable the spam filter, for example `/verify_config spamMode=new spamFirstMessages=3 spamBan=on spamCas=on`. See [Spam filter](#spam-filter).
+7. Share the approval link and revoke old links that admit users without approval. Other administrators can still bypass verification by direct invitation or manual approval; agree on a process for that.
 
 No public group or group username is required. Admin commands are `/verify_help`, `/verify_status`, `/verify_config`, `/verify_enable`, `/verify_disable` and `/verify_invite`; target a group by ID in private chat and omit it inside the group. Questions and rules are managed through private content, not commands. See [Private group setup](docs/private-group-setup.md) for details.
 
@@ -112,14 +113,74 @@ A per-minute Cron Trigger processes a small batch of expired sessions: it declin
 
 The webhook returns 2xx only after processing completes and returns a retryable error when processing fails. Telegram may still deliver updates more than once. Existing sessions keep their private question and rules snapshots across deployments, and `/verify_disable` only stops new sessions: existing verification and maintenance continue.
 
-D1 stores the group configuration, session snapshots and the content bank. Session payloads keep their own question and rules snapshots, so content updates never change in-flight verifications. There is no automatic session-retention cleanup yet, and Workers and D1 free-plan call, CPU and query limits apply; maintenance runs in bounded batches, so consider a queue or a paid plan for busier deployments. See [Platform notes](docs/platform-notes.md).
+D1 stores the group configuration, session snapshots, the content bank, spam blocklists and per-group message counts for the spam filter. Session payloads keep their own question and rules snapshots, so content updates never change in-flight verifications. There is no automatic session-retention cleanup yet, and Workers and D1 free-plan call, CPU and query limits apply; maintenance runs in bounded batches, so consider a queue or a paid plan for busier deployments. See [Platform notes](docs/platform-notes.md).
+
+## Spam filter
+
+The filter deletes spam (advertising, scams, funnelling and topics our groups do not host, such as politics) that matches the private blocklist, and can ban senders. It is independent of join verification. Each group configures it with `/verify_config`; options a group has not set follow Worker-wide defaults from `wrangler.jsonc` `vars`:
+
+| Group option             | Worker variable       | Built-in default | Meaning                                                                                       |
+| ------------------------ | --------------------- | ---------------- | --------------------------------------------------------------------------------------------- |
+| `spamMode=off\|new\|all` | `SPAM_MODE`           | `off`            | `new` inspects each member's first `spamFirstMessages` messages; `all` inspects every message |
+| `spamFirstMessages=N`    | `SPAM_FIRST_MESSAGES` | `3`              | Messages inspected per member in `new` mode, 1–100. Counts restart when a member rejoins      |
+| `spamBan=on\|off`        | `SPAM_BAN`            | `true`           | Ban senders on ban-tier matches and CAS hits; off only deletes, useful for trying out a list  |
+| `spamCas=on\|off`        | `SPAM_CAS`            | `true`           | Check a sender's first message against the [CAS](https://cas.chat) ban list                   |
+
+Every group option also accepts `default`, which clears the group's own value so the Worker variable applies again; `/verify_config` marks inherited values with "(global default)". Worker variables take `true`/`false` (or `1`/`0`); missing or malformed values fall back to the built-in defaults. They are not secrets: edit `wrangler.jsonc` and redeploy, or override them locally in `.dev.vars`. Setting `SPAM_MODE=all` makes every group without its own setting inspect all messages, including deleting political discussion.
+
+A message is checked together with its caption, hidden link targets, inline button labels and URLs, quoted text, forward origin and the sender's names and username. Edited messages are checked again. Before matching, text and blocklist entries are folded the same way: NFKC (full-width, circled and styled characters), lower case, Cyrillic/Greek look-alikes of Latin letters, and removal of everything except letters and digits, so spacing, punctuation, emoji and zero-width characters cannot split a keyword. Traditional Chinese is not converted; list both forms when needed. Messages whose Han characters are mostly separated by spaces (`加 微 信 领 钱`) are deleted as keyword evasion.
+
+- **Ban tier** (`ban`): delete and ban (`banChatMember`, or `banChatSenderChat` for channel identities).
+- **Delete tier** (`delete`) and the spacing rule: delete only.
+- Administrators, anonymous administrators and automatic forwards from the linked channel are exempt. Admin status is looked up only after a match.
+- The bot needs the delete-messages permission, plus ban-users when `spamBan=on`; `/verify_config` warns about missing rights. Permanent Telegram refusals are ignored, while rate limits and server errors fail the webhook so Telegram retries.
+- `new` mode starts counting when the filter first sees a member, so existing members are inspected for their next N messages after enabling it.
+
+The blocklist is generated by `pnpm blocklist:build` (see [Blocklist sources](#blocklist-sources)) into the content checkout as `blocklists/default.json`, and synced to D1 with `pnpm content:push`. It is never part of the Worker bundle, and each Worker isolate caches it for up to a minute.
+
+```json
+{
+  "$schema": "../schemas/blocklist.schema.json",
+  "version": "2026-10",
+  "ban": ["example ban phrase", "=example whole message"],
+  "delete": ["example suspicious phrase"]
+}
+```
+
+Entries match as substrings after normalization and must keep at least two letters or digits; an entry starting with `=` must equal a whole text. Keep the ban tier to phrases that do not occur in normal chat. The detection code is our own; its approach draws on [tg-spam](https://github.com/umputun/tg-spam), [xiaomaoJT/TgBot](https://github.com/xiaomaoJT/TgBot) and [bayes_spam_sniper](https://github.com/ramsayleung/bayes_spam_sniper).
+
+### Blocklist sources
+
+`pnpm blocklist:build` fetches the upstream word lists pinned in [`blocklist/sources.json`](blocklist/sources.json), applies our curation in [`blocklist/overrides.json`](blocklist/overrides.json), then normalizes, deduplicates and merges them into `<content checkout>/blocklists/default.json`. Both files are public so the result can be reviewed and reproduced. Review the generated file, then run `pnpm content:push`.
+
+```sh
+pnpm blocklist:build --dry-run          # print the merge report only
+pnpm blocklist:build                    # write private-content/blocklists/default.json
+pnpm blocklist:build --dir <path> --version 2026-10
+```
+
+- Duplicates are merged after normalization, and the stronger tier wins.
+- An entry is dropped when a shorter entry of the same or a stronger tier already contains it.
+- `drop` removes entries by reason: insults, common words with a high false-positive risk, and upstream in-jokes. Political terms are kept in the delete tier because our groups do not encourage political discussion. They come from upstream at build time and are never stored in this repository.
+- `delete` demotes risky ban-tier entries.
+- `add` holds our own entries, grouped by category: proxy airport promotion and reseller recruitment, group funnelling, and crypto scams.
+- Every entry is tested against `safeSamples`, normal messages from our groups. An entry that would match one is dropped and reported. Add a sample whenever a false positive shows up.
+
+The merged list currently uses these projects. We thank their authors:
+
+| Project         | URL                                  | License       | What we use                                                                                              |
+| --------------- | ------------------------------------ | ------------- | -------------------------------------------------------------------------------------------------------- |
+| tg-spam         | <https://github.com/umputun/tg-spam> | MIT           | `data/stop-words.txt`, ban tier                                                                          |
+| xiaomaoJT/TgBot | <https://github.com/xiaomaoJT/TgBot> | None declared | `sensitive_words` sheet of `XiaoMaoBot_DB.xlsx`: column A ban tier, column B delete tier, after curation |
+
+**If you are an author of one of these projects and do not want your list used here, please [open an issue](https://github.com/libnyanpasu/nyanpasu-group-bot/issues) or contact the maintainers. We will remove your source from `blocklist/sources.json` and stop distributing the derived entries.** The same applies if you would like different attribution.
 
 ## Content management
 
-Questions, rules and pack manifests live in D1 (`packs`, `rules` and `questions` tables) and are edited in a local checkout of the private question repository. The checkout keeps the JSON layout the schemas describe: `packs/<id>.json`, `rules/<id>.json` and `questions/<type>/<id>.json`; a `default` pack is required. JSON Schemas provide editor completion, and the CLI validates fields, references, unique IDs, answer indexes and bilingual message lengths with the same validator the Worker uses. Rules text is never truncated.
+Questions, rules and pack manifests live in D1 (`packs`, `rules` and `questions` tables) and are edited in a local checkout of the private question repository. The checkout keeps the JSON layout the schemas describe: `packs/<id>.json`, `rules/<id>.json` and `questions/<type>/<id>.json`, plus optional `blocklists/<id>.json` spam blocklists; a `default` pack is required. JSON Schemas provide editor completion, and the CLI validates fields, references, unique IDs, answer indexes and bilingual message lengths with the same validator the Worker uses. Rules text is never truncated.
 
 ```sh
-pnpm content:list                  # show the packs, question types and rules in local D1
+pnpm content:list                  # show the packs, question types, rules and blocklists in local D1
 pnpm content:push                  # import the checkout into local D1 (upsert)
 pnpm content:push --prune          # also delete D1 rows that are absent from the checkout
 pnpm content:push --remote         # import into the production D1 (requires wrangler login)
@@ -127,7 +188,7 @@ pnpm content:pull --dir <path>     # export D1 content into a directory
 pnpm content:pull --dir <path> --force  # overwrite existing files in the target directory
 ```
 
-Local D1 is the default target; `--remote` is required for production. `push` upserts only, so pass `--prune` to mirror deletions, and `--dir` selects another checkout. `pull` refuses to overwrite an existing checkout without `--force`, restores the `$schema` markers and runs oxfmt so exported files match the checkout format. Invalid banks are rejected before anything is written.
+Local D1 is the default target; `--remote` is required for production. Blocklists are pushed and pulled with the packs, except when `push` is given explicit pack ids. `push` upserts only, so pass `--prune` to mirror deletions, and `--dir` selects another checkout. `pull` refuses to overwrite an existing checkout without `--force`, restores the `$schema` markers and runs oxfmt so exported files match the checkout format. Invalid banks are rejected before anything is written.
 
 The schemas are kept in sync with the checkout:
 

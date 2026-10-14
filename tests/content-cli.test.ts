@@ -5,12 +5,13 @@ import { describe, expect, it } from "vitest";
 import {
   buildContentSql,
   exportContentFiles,
+  loadBlocklistValidator,
   loadContentValidator,
   parseArguments,
 } from "../scripts/content-cli.mjs";
 import { assembleContentPacks, readContentDocuments } from "../scripts/content-files.mjs";
 import { validateContentPack } from "../src/lib/quiz.js";
-import type { Question } from "../src/types.js";
+import type { BlocklistDocument, Question } from "../src/types.js";
 
 const question = (id: string, prompt = `Prompt ${id}`): Question => ({
   id,
@@ -49,6 +50,12 @@ function fixtureDocuments() {
       id,
       document: question(id),
     })),
+    blocklists: [
+      {
+        id: "default",
+        document: { version: "bl-v1", ban: ["fixture ban"], delete: ["fixture delete"] },
+      },
+    ] as { id: string; document: BlocklistDocument }[] | undefined,
   };
 }
 
@@ -66,6 +73,22 @@ describe("content CLI", () => {
     expect(sql).not.toContain("DELETE");
   });
 
+  it("upserts blocklists and leaves them untouched when not selected", () => {
+    const documents = fixtureDocuments();
+    expect(buildContentSql(documents)).toContain(
+      "INSERT INTO blocklists (id, payload, updated_at) VALUES ('default'",
+    );
+    documents.blocklists = undefined;
+    const selected = buildContentSql(documents, { prune: true });
+    expect(selected).not.toContain("blocklists");
+  });
+
+  it("validates blocklists with the bundled Worker validator", async () => {
+    const validateBlocklist = await loadBlocklistValidator();
+    expect(validateBlocklist(fixtureDocuments().blocklists?.[0].document)).toBeNull();
+    expect(validateBlocklist({ version: "v", ban: ["!!"], delete: [] })).toMatch(/ban\[0\]/);
+  });
+
   it("mirrors deletes only when pruning", () => {
     const sql = buildContentSql(fixtureDocuments(), { prune: true, updatedAt: 1 });
     expect(sql).toContain("DELETE FROM packs WHERE id NOT IN ('default');");
@@ -74,7 +97,13 @@ describe("content CLI", () => {
       "DELETE FROM questions WHERE NOT ((type = 'fixture' AND id IN ('q1', 'q2', 'q3')));",
     );
 
-    const empty = buildContentSql({ packs: [], rules: [], questions: [] }, { prune: true });
+    expect(sql).toContain("DELETE FROM blocklists WHERE id NOT IN ('default');");
+
+    const empty = buildContentSql(
+      { packs: [], rules: [], questions: [], blocklists: [] },
+      { prune: true },
+    );
+    expect(empty).toContain("DELETE FROM blocklists;");
     expect(empty).toContain("DELETE FROM packs;");
     expect(empty).toContain("DELETE FROM rules;");
     expect(empty).toContain("DELETE FROM questions;");
@@ -85,7 +114,11 @@ describe("content CLI", () => {
     try {
       const documents = fixtureDocuments();
       const written = exportContentFiles(directory, documents);
-      expect(written).toEqual({ packs: 1, rules: 1, questions: 3 });
+      expect(written).toEqual({ packs: 1, rules: 1, questions: 3, blocklists: 1 });
+      const blocklistFile = JSON.parse(
+        readFileSync(join(directory, "blocklists/default.json"), "utf8"),
+      );
+      expect(blocklistFile.$schema).toBe("../schemas/blocklist.schema.json");
 
       const packFile = JSON.parse(readFileSync(join(directory, "packs/default.json"), "utf8"));
       expect(packFile.$schema).toBe("../schemas/pack.schema.json");
@@ -97,6 +130,7 @@ describe("content CLI", () => {
       expect(questionFile.id).toBe("q2");
 
       const readBack = readContentDocuments(directory, true);
+      expect(readBack.blocklists).toEqual(documents.blocklists);
       expect(assembleContentPacks(readBack, validateContentPack)).toEqual(
         assembleContentPacks(documents, validateContentPack),
       );

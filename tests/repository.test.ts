@@ -3,7 +3,7 @@ import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqli
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { packs, questions, rules, schema } from "../src/schema.js";
+import { blocklists, packs, questions, rules, schema } from "../src/schema.js";
 import { createRepository } from "../src/lib/repository.js";
 import type { Config, Question, Session } from "../src/types.js";
 
@@ -117,6 +117,39 @@ describe("repository", () => {
       const replacement = { ...config, enabled: false };
       await repository.saveConfig(-100, replacement);
       expect(await repository.getConfig(-100)).toEqual(replacement);
+    } finally {
+      close();
+    }
+  });
+
+  it("stores blocklists and counts member messages per group", async () => {
+    const { database, close } = setup();
+    try {
+      const repository = createRepository(database);
+      expect(await repository.getBlocklist("default")).toBeNull();
+      await database
+        .insert(blocklists)
+        .values({
+          id: "default",
+          updatedAt: 1,
+          payload: { version: "v1", ban: ["xx"], delete: [] },
+        })
+        .run();
+      expect(await repository.getBlocklist("default")).toEqual({
+        version: "v1",
+        ban: ["xx"],
+        delete: [],
+      });
+
+      expect(await repository.getMemberMessages(-100, 7)).toBe(0);
+      await repository.recordMemberMessage(-100, 7, 1);
+      await repository.recordMemberMessage(-100, 7, 2);
+      await repository.recordMemberMessage(-200, 7, 3);
+      expect(await repository.getMemberMessages(-100, 7)).toBe(2);
+      await repository.resetMembers(-100, [7, 8]);
+      await repository.resetMembers(-100, []);
+      expect(await repository.getMemberMessages(-100, 7)).toBe(0);
+      expect(await repository.getMemberMessages(-200, 7)).toBe(1);
     } finally {
       close();
     }

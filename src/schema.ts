@@ -1,6 +1,14 @@
 import { sql } from "drizzle-orm";
 import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import type { Config, PackDocument, Question, RulesDocument, Session, Status } from "./types.js";
+import type {
+  BlocklistDocument,
+  Config,
+  PackDocument,
+  Question,
+  RulesDocument,
+  Session,
+  Status,
+} from "./types.js";
 
 export const packs = sqliteTable("packs", {
   id: text("id").primaryKey(),
@@ -23,6 +31,24 @@ export const questions = sqliteTable(
     payload: text("payload", { mode: "json" }).$type<Question>().notNull(),
   },
   (table) => [primaryKey({ columns: [table.type, table.id] })],
+);
+
+export const blocklists = sqliteTable("blocklists", {
+  id: text("id").primaryKey(),
+  updatedAt: integer("updated_at").notNull(),
+  payload: text("payload", { mode: "json" }).$type<BlocklistDocument>().notNull(),
+});
+
+/** Per-group message counts that let the spam filter stop inspecting trusted members. */
+export const members = sqliteTable(
+  "members",
+  {
+    groupId: integer("group_id").notNull(),
+    userId: integer("user_id").notNull(),
+    messages: integer("messages").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.groupId, table.userId] })],
 );
 
 export const groups = sqliteTable("groups", {
@@ -67,4 +93,4 @@ export const sessions = sqliteTable(
   ],
 );
 
-export const schema = { groups, sessions, packs, rules, questions };
+export const schema = { groups, sessions, packs, rules, questions, blocklists, members };

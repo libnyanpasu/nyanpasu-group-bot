@@ -40,7 +40,7 @@ async function main(): Promise<void> {
     parameters = {
       url: new URL("/webhook", url).href,
       secret_token: secret,
-      allowed_updates: ["message", "callback_query", "chat_join_request"],
+      allowed_updates: ["message", "edited_message", "callback_query", "chat_join_request"],
       max_connections: 10,
       drop_pending_updates: false,
     };

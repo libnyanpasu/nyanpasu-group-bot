@@ -10,5 +10,6 @@ This is a Telegram join verification bot on Cloudflare Workers with no frontend.
 - Use oxlint and oxfmt. Run pnpm check before delivering changes.
 - Tests run source using Vitest and real SQLite adapters; validate D1 SQL using local Wrangler migrations.
 - .tgcloud/ is dead legacy private state; leave it alone. .dev.vars, .env files, .wrangler/ and private-content/ are private. Never commit tokens or question content.
+- Spam blocklists are generated with `pnpm blocklist:build` from the upstream sources in blocklist/sources.json and the curation in blocklist/overrides.json. Pin source URLs to commits, and keep README › Blocklist sources listing every source with its URL, license and removal notice.
 - Question packs live in D1 (`packs`, `rules`, `questions`) and are synced from the gitignored private-content/ checkout with `pnpm content:push|pull|list`; the Worker bundle never contains content, and deploy never writes D1.
 - Deployment and D1 migrations are separate. Live Telegram checks need a dedicated test group; local mocks do not prove live Telegram behavior.

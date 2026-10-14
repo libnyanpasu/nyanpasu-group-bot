@@ -2,6 +2,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 import type {
+  BlocklistDocument,
   BotApi,
   CallbackQuery,
   Config,
@@ -16,6 +17,7 @@ import type {
 import { createRepository } from "../src/lib/repository.js";
 import { createService } from "../src/lib/service.js";
 import { callbackData, refreshCallbackData } from "../src/lib/quiz.js";
+import { compileBlocklist, type SpamSettings } from "../src/lib/spam.js";
 
 type ServiceCall =
   | { method: "sendMessage"; args: Parameters<BotApi["sendMessage"]>[0] }
@@ -27,7 +29,10 @@ type ServiceCall =
       method: "answerChatJoinRequestQuery";
       args: Parameters<BotApi["answerChatJoinRequestQuery"]>[0];
     }
-  | { method: "deleteMessage"; args: Parameters<BotApi["deleteMessage"]>[0] };
+  | { method: "deleteMessage"; args: Parameters<BotApi["deleteMessage"]>[0] }
+  | { method: "banChatMember"; args: Parameters<BotApi["banChatMember"]>[0] }
+  | { method: "banChatSenderChat"; args: Parameters<BotApi["banChatSenderChat"]>[0] }
+  | { method: "getChatMember"; args: Parameters<BotApi["getChatMember"]>[0] };
 
 interface TestContext {
   api: BotApi;
@@ -113,7 +118,16 @@ function apiFailure(message: string, fields: Omit<ApiFailure, keyof Error> = {})
 function setup({
   apiOverrides = {},
   defaultDeleteJoinMessages,
-}: { apiOverrides?: Partial<BotApi>; defaultDeleteJoinMessages?: boolean } = {}): TestContext {
+  blocklist,
+  casCheck = async () => false,
+  spamDefaults,
+}: {
+  apiOverrides?: Partial<BotApi>;
+  defaultDeleteJoinMessages?: boolean;
+  blocklist?: BlocklistDocument;
+  casCheck?: (userId: number) => Promise<boolean>;
+  spamDefaults?: SpamSettings;
+} = {}): TestContext {
   const sqlite = new DatabaseSync(":memory:");
   let closed = false;
   const close = () => {
@@ -161,6 +175,18 @@ function setup({
       updated_at INTEGER NOT NULL,
       payload TEXT NOT NULL,
       PRIMARY KEY (type, id)
+    );
+    CREATE TABLE blocklists (
+      id TEXT PRIMARY KEY,
+      updated_at INTEGER NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE TABLE members (
+      group_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      messages INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (group_id, user_id)
     );
   `);
   const database = drizzle(
@@ -238,8 +264,17 @@ function setup({
     async getChat({ chat_id }) {
       return { id: chat_id, type: "private" };
     },
-    async getChatMember() {
+    async getChatMember(args) {
+      calls.push({ method: "getChatMember", args });
       return { status: "member" };
+    },
+    async banChatMember(args) {
+      calls.push({ method: "banChatMember", args });
+      return true;
+    },
+    async banChatSenderChat(args) {
+      calls.push({ method: "banChatSenderChat", args });
+      return true;
     },
     ...apiOverrides,
   };
@@ -251,6 +286,9 @@ function setup({
     now: () => clock,
     random: () => 0.25,
     defaultDeleteJoinMessages,
+    blocklist: async () => (blocklist ? compileBlocklist(blocklist) : null),
+    casCheck,
+    spamDefaults,
   });
   return {
     api,
@@ -1272,6 +1310,235 @@ describe("join notice cleanup", () => {
 
       failure = apiFailure("limited", { code: 429, parameters: { retry_after: 3 } });
       await expect(ctx.service.joinNotice(notice)).rejects.toBe(failure);
+    } finally {
+      ctx.close();
+    }
+  });
+});
+
+describe("spam filter", () => {
+  const blocklist: BlocklistDocument = {
+    version: "test-blocklist",
+    ban: ["日入过万", "=加我"],
+    delete: ["点我主页"],
+  };
+  const groupMessage = (overrides: Partial<Message> = {}): Message => ({
+    message_id: 90,
+    chat: { id: -100, type: "supergroup" },
+    from: { id: 42, first_name: "Member" },
+    text: "hello everyone",
+    ...overrides,
+  });
+  const methods = (ctx: TestContext) => ctx.calls.map((call) => call.method);
+  const spamConfig = (overrides: Partial<Config> = {}): Config => ({
+    ...config,
+    spamMode: "new",
+    ...overrides,
+  });
+
+  it("does nothing while the filter is off", async () => {
+    const ctx = setup({ blocklist });
+    try {
+      await ctx.repository.saveConfig(-100, config);
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).resolves.toBe(false);
+      expect(ctx.calls).toEqual([]);
+      expect(await ctx.repository.getMemberMessages(-100, 42)).toBe(0);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("deletes and bans ban-tier matches through spacing, punctuation and full-width tricks", async () => {
+    const ctx = setup({ blocklist });
+    try {
+      await ctx.repository.saveConfig(-100, spamConfig());
+      await expect(
+        ctx.service.moderate(groupMessage({ text: "轻松 日·入 过-万！！" })),
+      ).resolves.toBe(true);
+      expect(ctx.calls).toEqual([
+        { method: "getChatMember", args: { chat_id: -100, user_id: 42 } },
+        { method: "deleteMessage", args: { chat_id: -100, message_id: 90 } },
+        { method: "banChatMember", args: { chat_id: -100, user_id: 42 } },
+      ]);
+      expect(await ctx.repository.getMemberMessages(-100, 42)).toBe(0);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("only deletes delete-tier matches, and only deletes ban-tier matches when spamBan is off", async () => {
+    const ctx = setup({ blocklist });
+    try {
+      await ctx.repository.saveConfig(-100, spamConfig());
+      await ctx.service.moderate(groupMessage({ caption: "详情点我主页" }));
+      await ctx.repository.saveConfig(-100, spamConfig({ spamBan: false }));
+      await ctx.service.moderate(groupMessage({ text: "日入过万" }));
+      expect(methods(ctx).filter((method) => method.startsWith("ban"))).toEqual([]);
+      expect(methods(ctx).filter((method) => method === "deleteMessage")).toHaveLength(2);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("checks buttons, names and forward origins, and honours exact entries", async () => {
+    const ctx = setup({ blocklist });
+    try {
+      await ctx.repository.saveConfig(-100, spamConfig({ spamMode: "all" }));
+      const hits = [
+        groupMessage({ reply_markup: { inline_keyboard: [[{ text: "日入过万 →" }]] } }),
+        groupMessage({ from: { id: 43, first_name: "日入", last_name: "过万" } }),
+        groupMessage({
+          forward_origin: {
+            type: "channel",
+            chat: { id: -1009, type: "channel", title: "日入过万" },
+          },
+        }),
+        groupMessage({ text: "加 我！" }),
+      ];
+      for (const message of hits) await expect(ctx.service.moderate(message)).resolves.toBe(true);
+      await expect(ctx.service.moderate(groupMessage({ text: "加我好友聊游戏" }))).resolves.toBe(
+        false,
+      );
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("deletes messages whose Han characters are spaced apart", async () => {
+    const ctx = setup();
+    try {
+      await ctx.repository.saveConfig(-100, spamConfig());
+      await expect(
+        ctx.service.moderate(groupMessage({ text: "想 赚 钱 的 朋 友 看 过 来" })),
+      ).resolves.toBe(true);
+      expect(methods(ctx)).toEqual(["getChatMember", "deleteMessage"]);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("exempts administrators and anonymous admins", async () => {
+    const ctx = setup({
+      blocklist,
+      apiOverrides: {
+        async getChatMember() {
+          return { status: "administrator" };
+        },
+      },
+    });
+    try {
+      await ctx.repository.saveConfig(-100, spamConfig());
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).resolves.toBe(false);
+      await expect(
+        ctx.service.moderate(
+          groupMessage({ text: "日入过万", sender_chat: { id: -100, type: "supergroup" } }),
+        ),
+      ).resolves.toBe(false);
+      expect(methods(ctx)).toEqual([]);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("bans channel identities with banChatSenderChat", async () => {
+    const ctx = setup({ blocklist });
+    try {
+      await ctx.repository.saveConfig(-100, spamConfig());
+      await ctx.service.moderate(
+        groupMessage({ text: "日入过万", sender_chat: { id: -1009, type: "channel" } }),
+      );
+      expect(ctx.calls).toEqual([
+        { method: "deleteMessage", args: { chat_id: -100, message_id: 90 } },
+        { method: "banChatSenderChat", args: { chat_id: -100, sender_chat_id: -1009 } },
+      ]);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("stops inspecting after the first N clean messages until the member rejoins", async () => {
+    const ctx = setup({ blocklist });
+    try {
+      await ctx.repository.saveConfig(-100, spamConfig({ spamFirstMessages: 2 }));
+      await ctx.service.moderate(groupMessage());
+      await ctx.service.moderate(groupMessage({ text: "edited later" }), { edited: true });
+      await ctx.service.moderate(groupMessage());
+      expect(await ctx.repository.getMemberMessages(-100, 42)).toBe(2);
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).resolves.toBe(false);
+
+      await ctx.service.joinNotice(groupMessage({ new_chat_members: [{ id: 42 }] }));
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).resolves.toBe(true);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("inspects every message in all mode", async () => {
+    const ctx = setup({ blocklist });
+    try {
+      await ctx.repository.saveConfig(-100, spamConfig({ spamMode: "all" }));
+      for (let index = 0; index < 5; index += 1) await ctx.service.moderate(groupMessage());
+      expect(await ctx.repository.getMemberMessages(-100, 42)).toBe(1);
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).resolves.toBe(true);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("bans CAS-listed users on their first message only", async () => {
+    const casCheck = vi.fn(async (userId: number) => userId === 666);
+    const ctx = setup({ casCheck });
+    try {
+      await ctx.repository.saveConfig(-100, spamConfig());
+      await ctx.service.moderate(groupMessage());
+      await ctx.service.moderate(groupMessage());
+      await expect(ctx.service.moderate(groupMessage({ from: { id: 666 } }))).resolves.toBe(true);
+      expect(casCheck.mock.calls.map(([userId]) => userId)).toEqual([42, 666]);
+      expect(methods(ctx)).toEqual(["getChatMember", "deleteMessage", "banChatMember"]);
+
+      casCheck.mockClear();
+      await ctx.repository.saveConfig(-100, spamConfig({ spamCas: false }));
+      await ctx.service.moderate(groupMessage({ from: { id: 777 } }));
+      expect(casCheck).not.toHaveBeenCalled();
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("applies Worker-wide defaults to groups without their own spam settings", async () => {
+    const ctx = setup({
+      blocklist,
+      spamDefaults: { mode: "all", firstMessages: 3, ban: false, cas: false },
+    });
+    try {
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).resolves.toBe(true);
+      expect(methods(ctx)).toEqual(["getChatMember", "deleteMessage"]);
+
+      await ctx.repository.saveConfig(-100, { ...config, spamMode: "off" });
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).resolves.toBe(false);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("ignores permanent refusals but rethrows retryable failures", async () => {
+    let failure = apiFailure("denied", {
+      code: 400,
+      description: "Bad Request: not enough rights",
+    });
+    const ctx = setup({
+      blocklist,
+      apiOverrides: {
+        async banChatMember() {
+          throw failure;
+        },
+      },
+    });
+    try {
+      await ctx.repository.saveConfig(-100, spamConfig());
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).resolves.toBe(true);
+      failure = apiFailure("limited", { code: 429, parameters: { retry_after: 1 } });
+      await expect(ctx.service.moderate(groupMessage({ text: "日入过万" }))).rejects.toBe(failure);
     } finally {
       ctx.close();
     }

@@ -1,4 +1,6 @@
 export type Language = "en" | "cn";
+/** Which group messages the spam filter inspects. */
+export type SpamMode = "off" | "new" | "all";
 export interface Question {
   id: string;
   prompt: string;
@@ -17,6 +19,14 @@ export interface Config {
   cooldownSeconds: number;
   /** Delete Telegram's "joined the group" service messages; absent inherits DELETE_JOIN_MESSAGES. */
   deleteJoinMessages?: boolean;
+  /** Spam filter scope; absent means off. */
+  spamMode?: SpamMode;
+  /** In "new" mode, how many messages per member are inspected; absent means 3. */
+  spamFirstMessages?: number;
+  /** Ban senders on ban-tier matches and CAS hits; absent means on. Off only deletes. */
+  spamBan?: boolean;
+  /** Look up first-time senders in the CAS ban list; absent means on. */
+  spamCas?: boolean;
 }
 export interface ContentPack {
   id: string;
@@ -30,6 +40,14 @@ export interface PackDocument {
   version: string;
   rules: string;
   questionTypes: string[];
+}
+/** A spam blocklist, mirroring `blocklists/<id>.json` in content checkouts. */
+export interface BlocklistDocument {
+  version: string;
+  /** Delete the message and ban the sender. */
+  ban: string[];
+  /** Delete the message only. */
+  delete: string[];
 }
 /** A rules document, mirroring `rules/<id>.json` in content checkouts. */
 export interface RulesDocument {
@@ -78,11 +96,29 @@ export interface User {
   id: number;
   username?: string;
   language_code?: string;
+  first_name?: string;
+  last_name?: string;
 }
 export interface Chat {
   id: number;
   type: string;
   title?: string;
+  username?: string;
+}
+export interface MessageEntity {
+  type: string;
+  url?: string;
+}
+export interface InlineButton {
+  text: string;
+  url?: string;
+}
+export interface MessageOrigin {
+  type: string;
+  sender_user?: User;
+  sender_user_name?: string;
+  sender_chat?: Chat;
+  chat?: Chat;
 }
 export interface Message {
   message_id: number;
@@ -91,6 +127,13 @@ export interface Message {
   sender_chat?: Chat;
   text?: string;
   new_chat_members?: User[];
+  caption?: string;
+  entities?: MessageEntity[];
+  caption_entities?: MessageEntity[];
+  reply_markup?: { inline_keyboard: InlineButton[][] };
+  quote?: { text: string };
+  forward_origin?: MessageOrigin;
+  is_automatic_forward?: boolean;
 }
 export interface JoinRequest {
   chat: Chat;
@@ -120,6 +163,11 @@ export interface Bindings {
   WEBHOOK_SECRET: string;
   /** Default for groups without their own deleteJoinMessages setting: "true" or "false". */
   DELETE_JOIN_MESSAGES?: string;
+  /** Spam filter defaults for groups without their own setting; see README › Spam filter. */
+  SPAM_MODE?: string;
+  SPAM_FIRST_MESSAGES?: string;
+  SPAM_BAN?: string;
+  SPAM_CAS?: string;
 }
 export interface MessageBody {
   text: string;
@@ -129,6 +177,7 @@ export interface Member {
   status: string;
   can_invite_users?: boolean;
   can_delete_messages?: boolean;
+  can_restrict_members?: boolean;
 }
 export interface BotApi {
   deleteMessage(input: { chat_id: number; message_id: number }): Promise<boolean>;
@@ -151,6 +200,8 @@ export interface BotApi {
   getMe(): Promise<User>;
   getChat(input: { chat_id: number }): Promise<Chat>;
   getChatMember(input: { chat_id: number; user_id: number }): Promise<Member>;
+  banChatMember(input: { chat_id: number; user_id: number }): Promise<boolean>;
+  banChatSenderChat(input: { chat_id: number; sender_chat_id: number }): Promise<boolean>;
 }
 export interface Repository {
   getConfig(groupId: number): Promise<Config | null>;
@@ -162,4 +213,9 @@ export interface Repository {
   listSessionsForUser(userId: number): Promise<Session[]>;
   listSessionsForGroup(groupId: number): Promise<Session[]>;
   listActionableSessions(now: number, limit?: number): Promise<Session[]>;
+  getBlocklist(id: string): Promise<BlocklistDocument | null>;
+  /** How many inspected messages a sender has posted in a group; 0 when unknown. */
+  getMemberMessages(groupId: number, senderId: number): Promise<number>;
+  recordMemberMessage(groupId: number, senderId: number, at: number): Promise<void>;
+  resetMembers(groupId: number, senderIds: number[]): Promise<void>;
 }
