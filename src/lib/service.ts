@@ -230,6 +230,15 @@ export function createService({
     return requiredSession(session.key);
   }
 
+  /** True while a freshly read row is still the validation message `candidate` selected. */
+  function sameMessage(row: Session, candidate: Session, messageId: number): boolean {
+    return (
+      row.nonce === candidate.nonce &&
+      row.messageId === messageId &&
+      row.userChatId === candidate.userChatId
+    );
+  }
+
   async function cleanupMessage(session: Session, candidate: Session): Promise<void> {
     const messageId = candidate.messageId;
     if (
@@ -243,10 +252,8 @@ export function createService({
     let current = await repository.getSession(session.key);
     if (
       !current ||
-      current.nonce !== session.nonce ||
+      !sameMessage(current, candidate, messageId) ||
       current.revision !== session.revision ||
-      current.messageId !== messageId ||
-      current.userChatId !== candidate.userChatId ||
       !cleanupDue(current, now())
     )
       return;
@@ -266,10 +273,8 @@ export function createService({
     current = await repository.getSession(session.key);
     if (
       !current ||
-      current.nonce !== candidate.nonce ||
+      !sameMessage(current, candidate, messageId) ||
       current.revision !== leaseRevision ||
-      current.messageId !== messageId ||
-      current.userChatId !== candidate.userChatId ||
       current.cleanupLeaseUntil !== leaseUntil ||
       current.messageDeletedAt !== undefined ||
       now() >= leaseUntil
@@ -285,10 +290,8 @@ export function createService({
       const latest = await repository.getSession(session.key);
       if (
         !latest ||
-        latest.nonce !== candidate.nonce ||
+        !sameMessage(latest, candidate, messageId) ||
         latest.revision !== leaseRevision ||
-        latest.messageId !== messageId ||
-        latest.userChatId !== candidate.userChatId ||
         latest.cleanupLeaseUntil !== leaseUntil
       )
         return;
@@ -317,10 +320,8 @@ export function createService({
     const latest = await repository.getSession(session.key);
     if (
       !latest ||
-      latest.nonce !== candidate.nonce ||
+      !sameMessage(latest, candidate, messageId) ||
       latest.revision !== leaseRevision ||
-      latest.messageId !== messageId ||
-      latest.userChatId !== candidate.userChatId ||
       latest.cleanupLeaseUntil !== leaseUntil
     )
       return;

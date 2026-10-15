@@ -151,12 +151,6 @@ export interface CallbackQuery {
 export interface Context {
   update?: { update_id: number };
 }
-export interface TelegramUpdate {
-  update_id: number;
-  message?: Message;
-  chat_join_request?: JoinRequest;
-  callback_query?: CallbackQuery;
-}
 export interface Bindings {
   DB: D1Database;
   BOT_TOKEN: string;
