@@ -1,3 +1,5 @@
+import { autoRetry } from "@grammyjs/auto-retry";
+import { Api, GrammyError, type ApiClientOptions } from "grammy";
 import type { BotApi } from "../types.js";
 
 type TelegramParameters = { retry_after?: number };
@@ -23,83 +25,87 @@ export class TelegramApiError extends Error {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+/**
+ * Options for every grammY `Api`. Webhook replies stay off because a decision must be
+ * persisted around the real API result, and the timeout bounds one request, not a retry.
+ */
+export const API_CLIENT_OPTIONS: ApiClientOptions = {
+  timeoutSeconds: 15,
+  canUseWebhookReply: () => false,
+};
+
+/**
+ * Retry only 429, which Telegram rejects before acting. 5xx and network failures are
+ * ambiguous (the call may have landed) and stay pending in D1; waits beyond three seconds
+ * are rethrown so the service persists `retry_after` instead of sleeping in the Worker.
+ */
+export function configureApi<A extends Api>(api: A): A {
+  api.config.use(
+    autoRetry({
+      maxRetryAttempts: 1,
+      maxDelaySeconds: 3,
+      rethrowInternalServerErrors: true,
+      rethrowHttpErrors: true,
+    }),
+  );
+  return api;
 }
 
-function apiDescription(value: unknown, token: string): string | undefined {
-  if (typeof value !== "string") return undefined;
+export function createApi(token: string): Api {
+  if (!token.trim()) throw new Error("Telegram bot token is required.");
+  return configureApi(new Api(token, API_CLIENT_OPTIONS));
+}
+
+function redact(value: string, token: string): string {
   return value
     .split(token)
     .join("[redacted]")
     .replace(/https?:\/\/\S+/gi, "[redacted URL]");
 }
 
-function apiParameters(value: unknown): TelegramParameters | undefined {
-  if (!isRecord(value)) return undefined;
-  const retryAfter = value.retry_after;
-  return typeof retryAfter === "number" && Number.isSafeInteger(retryAfter) && retryAfter >= 0
-    ? { retry_after: retryAfter }
-    : undefined;
+/** Reduce any grammY failure to a `TelegramApiError` that carries no payload or network detail. */
+function normalize(error: unknown, token: string): TelegramApiError {
+  if (!(error instanceof GrammyError)) return new TelegramApiError();
+  const retryAfter = error.parameters.retry_after;
+  return new TelegramApiError({
+    code: error.error_code,
+    description: redact(error.description, token),
+    parameters:
+      typeof retryAfter === "number" && Number.isSafeInteger(retryAfter) && retryAfter >= 0
+        ? { retry_after: retryAfter }
+        : undefined,
+  });
 }
 
-/** Build a Bot API implementation that uses only the Workers fetch runtime. */
-export function createTelegramApi(token: string, fetcher: typeof fetch = fetch): BotApi {
-  if (!token.trim()) throw new Error("Telegram bot token is required.");
-
-  async function call<Result>(method: string, input: object): Promise<Result> {
-    let response: Response;
+/** Adapt a grammY `Api` to the narrow `BotApi` port the service layer depends on. */
+export function toBotApi(api: Api, token: string): BotApi {
+  const raw = api.raw;
+  async function call<Result>(run: () => Promise<Result>): Promise<Result> {
     try {
-      response = await fetcher(`https://api.telegram.org/bot${token}/${method}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(input),
-        signal: AbortSignal.timeout(15_000),
-      });
-    } catch {
-      throw new TelegramApiError();
+      return await run();
+    } catch (error) {
+      throw normalize(error, token);
     }
-
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new TelegramApiError({ code: response.status });
-    }
-
-    if (!isRecord(payload)) throw new TelegramApiError({ code: response.status });
-
-    if (payload.ok !== true) {
-      const code =
-        typeof payload.error_code === "number" && Number.isSafeInteger(payload.error_code)
-          ? payload.error_code
-          : response.status;
-      throw new TelegramApiError({
-        code,
-        description: apiDescription(payload.description, token),
-        parameters: apiParameters(payload.parameters),
-      });
-    }
-
-    if (!response.ok || !Object.hasOwn(payload, "result")) {
-      throw new TelegramApiError({ code: response.status });
-    }
-    return payload.result as Result;
   }
 
   return {
-    createChatInviteLink: (input) => call("createChatInviteLink", input),
-    sendMessage: (input) => call("sendMessage", input),
-    editMessageText: (input) => call("editMessageText", input),
-    answerCallbackQuery: (input) => call("answerCallbackQuery", input),
-    approveChatJoinRequest: (input) => call("approveChatJoinRequest", input),
-    declineChatJoinRequest: (input) => call("declineChatJoinRequest", input),
-    answerChatJoinRequestQuery: (input) => call("answerChatJoinRequestQuery", input),
-    deleteMessage: (input) => call("deleteMessage", input),
-    getMe: () => call("getMe", {}),
-    getChat: (input) => call("getChat", input),
-    getChatMember: (input) => call("getChatMember", input),
-    banChatMember: (input) => call("banChatMember", input),
-    banChatSenderChat: (input) => call("banChatSenderChat", input),
+    createChatInviteLink: (input) => call(() => raw.createChatInviteLink(input)),
+    sendMessage: (input) => call(() => raw.sendMessage(input)),
+    editMessageText: (input) => call(() => raw.editMessageText(input)),
+    answerCallbackQuery: (input) => call(() => raw.answerCallbackQuery(input)),
+    approveChatJoinRequest: (input) => call(() => raw.approveChatJoinRequest(input)),
+    declineChatJoinRequest: (input) => call(() => raw.declineChatJoinRequest(input)),
+    answerChatJoinRequestQuery: (input) => call(() => raw.answerChatJoinRequestQuery(input)),
+    deleteMessage: (input) => call(() => raw.deleteMessage(input)),
+    getMe: () => call(() => raw.getMe()),
+    getChat: (input) => call(() => raw.getChat(input)),
+    getChatMember: (input) => call(() => raw.getChatMember(input)),
+    banChatMember: (input) => call(() => raw.banChatMember(input)),
+    banChatSenderChat: (input) => call(() => raw.banChatSenderChat(input)),
   };
+}
+
+/** Build the service's Bot API port on grammY with the project's client options. */
+export function createTelegramApi(token: string, api: Api = createApi(token)): BotApi {
+  return toBotApi(api, token);
 }

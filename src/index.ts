@@ -1,228 +1,22 @@
 import { Hono } from "hono";
-import type {
-  Bindings,
-  CallbackQuery,
-  Chat,
-  InlineButton,
-  JoinRequest,
-  Message,
-  MessageEntity,
-  MessageOrigin,
-  TelegramUpdate,
-  User,
-} from "./types.js";
+import { BotError, GrammyError, webhookCallback } from "grammy";
+import type { Bindings } from "./types.js";
+import { createBot } from "./bot.js";
+import { apiError } from "./lib/api-error.js";
 import { createRuntime } from "./lib/runtime.js";
 
+export { SessionTimer } from "./timer.js";
+
 type HonoEnv = { Bindings: Bindings };
-type SupportedUpdate =
-  | { kind: "message"; updateId: number; value: Message }
-  | { kind: "edited_message"; updateId: number; value: Message }
-  | { kind: "callback_query"; updateId: number; value: CallbackQuery }
-  | { kind: "chat_join_request"; updateId: number; value: JoinRequest }
-  | { kind: "unsupported"; updateId: number };
 
 const app = new Hono<HonoEnv>();
 const secretPattern = /^[A-Za-z0-9_-]{1,256}$/;
-const supportedKeys = ["message", "edited_message", "callback_query", "chat_join_request"] as const;
+// Handlers make several D1 and Telegram calls; past this the update is answered 500 and
+// redelivered, which revision CAS and leases make safe even while the first run continues.
+const UPDATE_TIMEOUT_MS = 25_000;
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function safeId(value: unknown, positive = false): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isSafeInteger(value) &&
-    value !== 0 &&
-    (!positive || value > 0)
-  );
-}
-
-/** Copy an optional string field; malformed display-only fields are dropped, not rejected. */
-function text<Key extends string>(value: Record<string, unknown>, key: Key) {
-  const field = value[key];
-  return (typeof field === "string" ? { [key]: field } : {}) as Partial<Record<Key, string>>;
-}
-
-function parseUser(value: unknown): User | null {
-  if (!record(value) || !safeId(value.id, true)) return null;
-  if (value.username !== undefined && typeof value.username !== "string") return null;
-  if (value.language_code !== undefined && typeof value.language_code !== "string") return null;
-  return {
-    id: value.id,
-    ...(typeof value.username === "string" ? { username: value.username } : {}),
-    ...(typeof value.language_code === "string" ? { language_code: value.language_code } : {}),
-    ...text(value, "first_name"),
-    ...text(value, "last_name"),
-  };
-}
-
-function parseChat(value: unknown): Chat | null {
-  if (!record(value) || !safeId(value.id)) return null;
-  if (
-    value.type !== "private" &&
-    value.type !== "group" &&
-    value.type !== "supergroup" &&
-    value.type !== "channel"
-  )
-    return null;
-  if (value.title !== undefined && typeof value.title !== "string") return null;
-  return {
-    id: value.id,
-    type: value.type,
-    ...(typeof value.title === "string" ? { title: value.title } : {}),
-    ...text(value, "username"),
-  };
-}
-
-// The fields below only feed the spam filter. They are parsed leniently so an
-// unexpected shape loses filter input instead of failing (and redelivering) the update.
-function parseEntities(value: unknown): MessageEntity[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.flatMap((entity) =>
-    record(entity) && typeof entity.type === "string"
-      ? [{ type: entity.type, ...text(entity, "url") }]
-      : [],
-  );
-}
-
-function parseKeyboard(value: unknown): { inline_keyboard: InlineButton[][] } | undefined {
-  if (!record(value) || !Array.isArray(value.inline_keyboard)) return undefined;
-  const rows = value.inline_keyboard.map((row: unknown) =>
-    Array.isArray(row)
-      ? row.flatMap((button) =>
-          record(button) && typeof button.text === "string"
-            ? [{ text: button.text, ...text(button, "url") }]
-            : [],
-        )
-      : [],
-  );
-  return { inline_keyboard: rows };
-}
-
-function parseOrigin(value: unknown): MessageOrigin | undefined {
-  if (!record(value) || typeof value.type !== "string") return undefined;
-  const senderUser = parseUser(value.sender_user);
-  const senderChat = parseChat(value.sender_chat);
-  const chat = parseChat(value.chat);
-  return {
-    type: value.type,
-    ...text(value, "sender_user_name"),
-    ...(senderUser ? { sender_user: senderUser } : {}),
-    ...(senderChat ? { sender_chat: senderChat } : {}),
-    ...(chat ? { chat } : {}),
-  };
-}
-
-function filterFields(value: Record<string, unknown>): Partial<Message> {
-  const entities = parseEntities(value.entities);
-  const captionEntities = parseEntities(value.caption_entities);
-  const keyboard = parseKeyboard(value.reply_markup);
-  const origin = parseOrigin(value.forward_origin);
-  return {
-    ...text(value, "caption"),
-    ...(entities ? { entities } : {}),
-    ...(captionEntities ? { caption_entities: captionEntities } : {}),
-    ...(keyboard ? { reply_markup: keyboard } : {}),
-    ...(record(value.quote) && typeof value.quote.text === "string"
-      ? { quote: { text: value.quote.text } }
-      : {}),
-    ...(origin ? { forward_origin: origin } : {}),
-    ...(value.is_automatic_forward === true ? { is_automatic_forward: true } : {}),
-  };
-}
-
-function parseMessage(value: unknown): Message | null {
-  if (
-    !record(value) ||
-    typeof value.message_id !== "number" ||
-    !Number.isSafeInteger(value.message_id) ||
-    value.message_id < 0
-  )
-    return null;
-  const chat = parseChat(value.chat);
-  if (!chat) return null;
-  const from = value.from === undefined ? undefined : parseUser(value.from);
-  const senderChat = value.sender_chat === undefined ? undefined : parseChat(value.sender_chat);
-  if ((value.from !== undefined && !from) || (value.sender_chat !== undefined && !senderChat))
-    return null;
-  if (value.text !== undefined && typeof value.text !== "string") return null;
-  let newChatMembers: User[] | undefined;
-  if (value.new_chat_members !== undefined) {
-    if (!Array.isArray(value.new_chat_members)) return null;
-    newChatMembers = [];
-    for (const member of value.new_chat_members) {
-      const user = parseUser(member);
-      if (!user) return null;
-      newChatMembers.push(user);
-    }
-  }
-  return {
-    message_id: value.message_id,
-    chat,
-    ...(from ? { from } : {}),
-    ...(senderChat ? { sender_chat: senderChat } : {}),
-    ...(typeof value.text === "string" ? { text: value.text } : {}),
-    ...(newChatMembers ? { new_chat_members: newChatMembers } : {}),
-    ...filterFields(value),
-  };
-}
-
-function parseJoinRequest(value: unknown): JoinRequest | null {
-  if (!record(value)) return null;
-  const chat = parseChat(value.chat);
-  const from = parseUser(value.from);
-  if (!chat || !from || !safeId(value.user_chat_id, true)) return null;
-  if (typeof value.date !== "number" || !Number.isSafeInteger(value.date) || value.date < 0)
-    return null;
-  if (value.query_id !== undefined && (typeof value.query_id !== "string" || !value.query_id))
-    return null;
-  return {
-    chat,
-    from,
-    user_chat_id: value.user_chat_id,
-    date: value.date,
-    ...(typeof value.query_id === "string" ? { query_id: value.query_id } : {}),
-  };
-}
-
-function parseCallbackQuery(value: unknown): CallbackQuery | null {
-  if (!record(value) || typeof value.id !== "string" || !value.id) return null;
-  const from = parseUser(value.from);
-  const message = value.message === undefined ? undefined : parseMessage(value.message);
-  if (!from || (value.message !== undefined && !message)) return null;
-  if (value.data !== undefined && typeof value.data !== "string") return null;
-  return {
-    id: value.id,
-    from,
-    ...(message ? { message } : {}),
-    ...(typeof value.data === "string" ? { data: value.data } : {}),
-  };
-}
-
-function parseUpdate(value: unknown): SupportedUpdate | null {
-  if (
-    !record(value) ||
-    typeof value.update_id !== "number" ||
-    !Number.isSafeInteger(value.update_id) ||
-    value.update_id < 0
-  )
-    return null;
-  const present = supportedKeys.filter((key) => Object.hasOwn(value, key));
-  if (present.length === 0) return { kind: "unsupported", updateId: value.update_id };
-  if (present.length !== 1) return null;
-
-  const kind = present[0];
-  if (kind === "message" || kind === "edited_message") {
-    const message = parseMessage(value[kind]);
-    return message ? { kind, updateId: value.update_id, value: message } : null;
-  }
-  if (kind === "callback_query") {
-    const query = parseCallbackQuery(value.callback_query);
-    return query ? { kind, updateId: value.update_id, value: query } : null;
-  }
-  const request = parseJoinRequest(value.chat_join_request);
-  return request ? { kind, updateId: value.update_id, value: request } : null;
 }
 
 function validSecret(value: string | undefined): value is string {
@@ -246,6 +40,7 @@ app.post("/webhook", async (context) => {
   if (!BOT_TOKEN?.trim() || !validSecret(WEBHOOK_SECRET)) {
     return context.json({ error: "Service is not configured." }, 500);
   }
+  // grammY reads the body before it checks the secret, so authenticate first.
   if (!secretMatches(context.req.header("X-Telegram-Bot-Api-Secret-Token"), WEBHOOK_SECRET)) {
     return context.body(null, 401);
   }
@@ -256,34 +51,28 @@ app.post("/webhook", async (context) => {
   } catch {
     return context.json({ error: "Invalid request body." }, 400);
   }
-  const update = parseUpdate(body);
-  if (!update) return context.json({ error: "Invalid Telegram update." }, 400);
-  if (update.kind === "unsupported") return context.body(null, 200);
-
-  try {
-    const runtime = createRuntime(context.env);
-    if (update.kind === "message" && update.value.new_chat_members) {
-      await runtime.service.joinNotice(update.value);
-    } else if (update.kind === "edited_message") {
-      await runtime.service.moderate(update.value, { edited: true });
-    } else if (update.kind === "message") {
-      // Filter first so spam cannot hide behind an admin command prefix.
-      if (await runtime.service.moderate(update.value)) return context.body(null, 200);
-      const handled = await runtime.admin.handle(update.value);
-      if (!handled && /^\/(?:start|help)(?:\s|$)/.test(update.value.text ?? "")) {
-        await runtime.service.start(update.value);
-      }
-    } else if (update.kind === "callback_query") {
-      await runtime.service.callback(update.value);
-    } else {
-      const telegramUpdate: TelegramUpdate = { update_id: update.updateId };
-      await runtime.service.join(update.value, { update: telegramUpdate });
-    }
-  } catch {
-    return context.json({ error: "Update processing failed." }, 500);
+  if (!record(body) || !Number.isSafeInteger(body.update_id)) {
+    return context.json({ error: "Invalid Telegram update." }, 400);
   }
-  return context.body(null, 200);
+
+  // Await the whole update before acknowledging it; a failure surfaces as a 500 below.
+  try {
+    return await webhookCallback(createBot(context.env), "hono", {
+      secretToken: WEBHOOK_SECRET,
+      timeoutMilliseconds: UPDATE_TIMEOUT_MS,
+      onTimeout: "throw",
+    })(context);
+  } catch (error) {
+    // Webhook updates never reach `bot.catch`, and a BotError message embeds the cause's
+    // text. Log only the update ID and the API error code, then rethrow so Telegram retries.
+    const cause = error instanceof BotError ? error.error : error;
+    const code = cause instanceof GrammyError ? cause.error_code : apiError(cause).code;
+    console.warn("Update processing failed", body.update_id, code);
+    throw error;
+  }
 });
+
+app.onError((_error, context) => context.json({ error: "Update processing failed." }, 500));
 
 export default {
   fetch: (request: Request, env: Bindings, executionCtx: ExecutionContext) =>

@@ -13,6 +13,7 @@ export async function buildWorker() {
     bundle: true,
     format: "esm",
     platform: "browser",
+    external: ["cloudflare:workers"],
     target: "es2022",
     sourcemap: false,
     legalComments: "none",

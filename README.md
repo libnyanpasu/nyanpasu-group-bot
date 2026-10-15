@@ -1,6 +1,6 @@
 # Nyanpasu Group Bot
 
-A Telegram private-group join verification bot on Cloudflare Workers. Hono handles authenticated webhooks, Drizzle + D1 persist state, and a fetch client calls the standard Telegram Bot API. Telegram Serverless access is not required. There is no public frontend.
+A Telegram private-group join verification bot on Cloudflare Workers. Hono handles authenticated webhooks, grammY routes updates and calls the standard Bot API, and Drizzle + D1 persist state. Telegram Serverless access is not required. There is no public frontend.
 
 A requester sees the full group rules and one bilingual multiple-choice question in private chat. The question can be refreshed twice at most; the answer button also explicitly accepts the rules. A correct answer approves the join request, while a wrong answer or timeout declines it and starts the default 30-minute approval cooldown. Prompts are available in `cn` and `en`.
 
@@ -8,9 +8,11 @@ A requester sees the full group rules and one bilingual multiple-choice question
 
 | Path                            | Purpose                                                                        |
 | ------------------------------- | ------------------------------------------------------------------------------ |
-| `src/index.ts`                  | Hono webhook, health check and Workers scheduled entry                         |
-| `src/lib/telegram.ts`           | Bot API client built on fetch, with timeouts and redacted errors               |
+| `src/index.ts`                  | Hono webhook (secret check, then grammY), health check and scheduled entry     |
+| `src/bot.ts`                    | Request-scoped grammY `Bot`: routes each update kind to the service            |
+| `src/lib/telegram.ts`           | grammY `Api` setup (timeouts, 429 retry) and the redacting `BotApi` adapter    |
 | `src/lib/service.ts`            | Verification flow, revision CAS, approval retries and scheduled cleanup        |
+| `src/timer.ts`                  | Per-session Durable Object timer that wakes maintenance at the due time        |
 | `src/lib/repository.ts`         | Drizzle queries and revision CAS                                               |
 | `src/schema.ts` / `migrations/` | D1 table definitions and SQL migrations                                        |
 | `private-content/`              | Local checkout of the private question repository (gitignored); synced with D1 |
@@ -32,7 +34,7 @@ cp .env.example .dev.vars
 pnpm dev
 ```
 
-`pnpm check` runs strict TypeScript checks for source and tests, oxlint, oxfmt, schema-copy checks, Vitest, bundling and a Wrangler deploy dry-run; it never deploys remote resources. Every test is a `.test.ts` file. Vitest verifies SQL, CAS and query conditions against real in-memory SQLite, validates migrations and the database adapter through local Wrangler D1, and exercises the verification flow and webhook with a mocked Telegram API. Local mocks do not prove live Telegram behavior.
+`pnpm check` runs strict TypeScript checks for source and tests, oxlint, oxfmt, schema-copy checks, Vitest, bundling and a Wrangler deploy dry-run; it never deploys remote resources. Every test is a `.test.ts` file. Vitest verifies SQL, CAS and query conditions against real in-memory SQLite, validates migrations and the database adapter through local Wrangler D1, and exercises the verification flow with a recording fake Bot API and the webhook with a stubbed runtime. Local mocks do not prove live Telegram behavior.
 
 The dev server listens on `http://localhost:8787` by default. `GET /` is a minimal health check; `POST /webhook` handles Telegram updates and only requests carrying a valid `X-Telegram-Bot-Api-Secret-Token` enter the verification flow. With `--test-scheduled`, `http://localhost:8787/__scheduled` triggers local maintenance manually; this debug route is not part of the deployed public interface. `pnpm dev` builds before starting; rebuild after source changes. Content changes only need `pnpm content:push` and take effect without a restart.
 
@@ -109,7 +111,7 @@ No public group or group username is required. Admin commands are `/verify_help`
 
 The verification deadline runs from the join request; refreshing and `/start` do not extend it. Answers, rule acceptance and approval intentions are persisted through D1 revision CAS before any Telegram call. Short leases reduce duplicate concurrent work and `retry_after` drives retries, but no transaction spans D1 and the Bot API, so an ambiguous network outcome cannot guarantee exactly-once external effects.
 
-A per-minute Cron Trigger processes a small batch of expired sessions: it declines overdue requests, retries unfinished decisions and deletes verification messages after their original deadline. Scheduling, backlog and API retries can delay cleanup, and cron changes need time to propagate. The approval cooldown is a bot-side gate, not a Telegram group ban.
+A per-session Durable Object alarm declines overdue requests, retries unfinished decisions and deletes verification messages after their original deadline, close to the moment each is due. A per-minute Cron Trigger processes a small batch as a backstop for anything a timer missed. API retries can still delay cleanup, and cron changes need time to propagate. The approval cooldown is a bot-side gate, not a Telegram group ban.
 
 The webhook returns 2xx only after processing completes and returns a retryable error when processing fails. Telegram may still deliver updates more than once. Existing sessions keep their private question and rules snapshots across deployments, and `/verify_disable` only stops new sessions: existing verification and maintenance continue.
 

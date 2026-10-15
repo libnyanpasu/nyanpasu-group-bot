@@ -18,25 +18,11 @@ import { createRepository } from "../src/lib/repository.js";
 import { createService } from "../src/lib/service.js";
 import { callbackData, refreshCallbackData } from "../src/lib/quiz.js";
 import { compileBlocklist, type SpamSettings } from "../src/lib/spam.js";
-
-type ServiceCall =
-  | { method: "sendMessage"; args: Parameters<BotApi["sendMessage"]>[0] }
-  | { method: "editMessageText"; args: Parameters<BotApi["editMessageText"]>[0] }
-  | { method: "answerCallbackQuery"; args: Parameters<BotApi["answerCallbackQuery"]>[0] }
-  | { method: "approveChatJoinRequest"; args: Parameters<BotApi["approveChatJoinRequest"]>[0] }
-  | { method: "declineChatJoinRequest"; args: Parameters<BotApi["declineChatJoinRequest"]>[0] }
-  | {
-      method: "answerChatJoinRequestQuery";
-      args: Parameters<BotApi["answerChatJoinRequestQuery"]>[0];
-    }
-  | { method: "deleteMessage"; args: Parameters<BotApi["deleteMessage"]>[0] }
-  | { method: "banChatMember"; args: Parameters<BotApi["banChatMember"]>[0] }
-  | { method: "banChatSenderChat"; args: Parameters<BotApi["banChatSenderChat"]>[0] }
-  | { method: "getChatMember"; args: Parameters<BotApi["getChatMember"]>[0] };
+import { createFakeBotApi, type FakeCall } from "./helpers/fake-telegram.js";
 
 interface TestContext {
   api: BotApi;
-  calls: ServiceCall[];
+  calls: FakeCall[];
   repository: Repository;
   service: ReturnType<typeof createService>;
   setNow(value: number): void;
@@ -221,63 +207,7 @@ function setup({
   for (const question of testContent.questions) {
     seedQuestion.run("fixture", question.id, JSON.stringify(question));
   }
-  const calls: ServiceCall[] = [];
-  let nextMessageId = 1000;
-  const api: BotApi = {
-    async sendMessage(args) {
-      calls.push({ method: "sendMessage", args });
-      return {
-        message_id: nextMessageId++,
-        chat: { id: args.chat_id, type: "private" },
-      };
-    },
-    async editMessageText(args) {
-      calls.push({ method: "editMessageText", args });
-      return true;
-    },
-    async answerCallbackQuery(args) {
-      calls.push({ method: "answerCallbackQuery", args });
-      return true;
-    },
-    async approveChatJoinRequest(args) {
-      calls.push({ method: "approveChatJoinRequest", args });
-      return true;
-    },
-    async declineChatJoinRequest(args) {
-      calls.push({ method: "declineChatJoinRequest", args });
-      return true;
-    },
-    async answerChatJoinRequestQuery(args) {
-      calls.push({ method: "answerChatJoinRequestQuery", args });
-      return true;
-    },
-    async deleteMessage(args) {
-      calls.push({ method: "deleteMessage", args });
-      return true;
-    },
-    async createChatInviteLink() {
-      return { invite_link: "https://t.me/+test" };
-    },
-    async getMe() {
-      return { id: 1 };
-    },
-    async getChat({ chat_id }) {
-      return { id: chat_id, type: "private" };
-    },
-    async getChatMember(args) {
-      calls.push({ method: "getChatMember", args });
-      return { status: "member" };
-    },
-    async banChatMember(args) {
-      calls.push({ method: "banChatMember", args });
-      return true;
-    },
-    async banChatSenderChat(args) {
-      calls.push({ method: "banChatSenderChat", args });
-      return true;
-    },
-    ...apiOverrides,
-  };
+  const { api, calls } = createFakeBotApi(apiOverrides);
   const repository = createRepository(database);
   let clock = initialNow;
   const service = createService({
@@ -896,6 +826,53 @@ describe("join verification service", () => {
       expect(afterStart.messageId).toBe(original.messageId);
       expect(afterStart.messageDeletedAt).toBe(original.expiresAt);
     } finally {
+      ctx.close();
+    }
+  });
+
+  it("maintains one session for its timer only once it is due", async () => {
+    const ctx = setup();
+    try {
+      await ctx.repository.saveConfig(-100, config);
+      await ctx.service.join(joinRequest(), update(1));
+      const original = await requiredSession(ctx.repository, "-100:42");
+
+      await expect(ctx.service.maintainSession("-100:42")).resolves.toBe(original.expiresAt);
+      expect(ctx.calls.filter((call) => call.method === "declineChatJoinRequest")).toHaveLength(0);
+      await expect(ctx.service.maintainSession("-100:missing")).resolves.toBeNull();
+
+      ctx.setNow(original.expiresAt);
+      await expect(ctx.service.maintainSession("-100:42")).resolves.toBeNull();
+
+      const done = await requiredSession(ctx.repository, "-100:42");
+      expect(done.status).toBe("declined");
+      expect(done.messageDeletedAt).toBe(original.expiresAt);
+      expect(ctx.calls.filter((call) => call.method === "declineChatJoinRequest")).toHaveLength(1);
+      expect(ctx.calls.filter((call) => call.method === "deleteMessage")).toHaveLength(1);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("reports a failed decision's persisted retry time instead of throwing from the timer", async () => {
+    const ctx = setup({
+      apiOverrides: {
+        declineChatJoinRequest: async () => {
+          throw apiFailure("Too many requests", { code: 429, parameters: { retry_after: 7 } });
+        },
+      },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await ctx.repository.saveConfig(-100, config);
+      await ctx.service.join(joinRequest(), update(1));
+      const original = await requiredSession(ctx.repository, "-100:42");
+      ctx.setNow(original.expiresAt);
+
+      await expect(ctx.service.maintainSession("-100:42")).resolves.toBe(original.expiresAt + 7000);
+      expect((await requiredSession(ctx.repository, "-100:42")).status).toBe("decline_pending");
+    } finally {
+      warn.mockRestore();
       ctx.close();
     }
   });

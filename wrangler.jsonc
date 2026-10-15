@@ -7,6 +7,9 @@
   "workers_dev": true,
   "preview_urls": false,
   "triggers": { "crons": ["* * * * *"] },
+  // One timer per verification session wakes maintenance at its due time; cron is the backstop.
+  "durable_objects": { "bindings": [{ "name": "SESSION_TIMER", "class_name": "SessionTimer" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SessionTimer"] }],
   "d1_databases": [
     {
       "binding": "DB",

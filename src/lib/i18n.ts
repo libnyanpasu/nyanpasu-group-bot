@@ -42,14 +42,19 @@ export const messages = {
 
 export type CoreKey = keyof typeof messages.en;
 
+/** Fill `{name}` placeholders; unknown placeholders stay visible. */
+export function interpolate(template: string, values: Record<string, string | number>): string {
+  return template.replace(/\{([A-Za-z]+)\}/g, (token, name: string) =>
+    Object.hasOwn(values, name) ? String(values[name]) : token,
+  );
+}
+
 export function t(
   language: Language,
   key: CoreKey,
   values: Record<string, string | number> = {},
 ): string {
-  return messages[language][key].replace(/\{([a-zA-Z]+)\}/g, (token, name: string) => {
-    return Object.hasOwn(values, name) ? String(values[name]) : token;
-  });
+  return interpolate(messages[language][key], values);
 }
 
 export function detectLanguage(languageCode?: string | null): Language {

@@ -1,4 +1,5 @@
 import type { Language } from "../types.js";
+import { interpolate } from "./i18n.js";
 
 const messages = {
   cn: {
@@ -139,8 +140,5 @@ export function adminMessage(
   key: AdminMessageKey,
   values: Record<string, string | number> = {},
 ): string {
-  return messages[language][key].replace(/\{([A-Za-z]+)\}/g, (match, name: string) => {
-    const value = values[name];
-    return value === undefined ? match : String(value);
-  });
+  return interpolate(messages[language][key], values);
 }

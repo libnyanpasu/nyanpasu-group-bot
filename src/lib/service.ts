@@ -19,6 +19,7 @@ import type {
   Message,
 } from "../types.js";
 import { t, detectLanguage } from "./i18n.js";
+import { nextDueAt } from "./schedule.js";
 import {
   type BlocklistMatcher,
   type SpamSettings,
@@ -230,6 +231,15 @@ export function createService({
     return requiredSession(session.key);
   }
 
+  /** True while a freshly read row is still the validation message `candidate` selected. */
+  function sameMessage(row: Session, candidate: Session, messageId: number): boolean {
+    return (
+      row.nonce === candidate.nonce &&
+      row.messageId === messageId &&
+      row.userChatId === candidate.userChatId
+    );
+  }
+
   async function cleanupMessage(session: Session, candidate: Session): Promise<void> {
     const messageId = candidate.messageId;
     if (
@@ -243,10 +253,8 @@ export function createService({
     let current = await repository.getSession(session.key);
     if (
       !current ||
-      current.nonce !== session.nonce ||
+      !sameMessage(current, candidate, messageId) ||
       current.revision !== session.revision ||
-      current.messageId !== messageId ||
-      current.userChatId !== candidate.userChatId ||
       !cleanupDue(current, now())
     )
       return;
@@ -266,10 +274,8 @@ export function createService({
     current = await repository.getSession(session.key);
     if (
       !current ||
-      current.nonce !== candidate.nonce ||
+      !sameMessage(current, candidate, messageId) ||
       current.revision !== leaseRevision ||
-      current.messageId !== messageId ||
-      current.userChatId !== candidate.userChatId ||
       current.cleanupLeaseUntil !== leaseUntil ||
       current.messageDeletedAt !== undefined ||
       now() >= leaseUntil
@@ -285,10 +291,8 @@ export function createService({
       const latest = await repository.getSession(session.key);
       if (
         !latest ||
-        latest.nonce !== candidate.nonce ||
+        !sameMessage(latest, candidate, messageId) ||
         latest.revision !== leaseRevision ||
-        latest.messageId !== messageId ||
-        latest.userChatId !== candidate.userChatId ||
         latest.cleanupLeaseUntil !== leaseUntil
       )
         return;
@@ -317,10 +321,8 @@ export function createService({
     const latest = await repository.getSession(session.key);
     if (
       !latest ||
-      latest.nonce !== candidate.nonce ||
+      !sameMessage(latest, candidate, messageId) ||
       latest.revision !== leaseRevision ||
-      latest.messageId !== messageId ||
-      latest.userChatId !== candidate.userChatId ||
       latest.cleanupLeaseUntil !== leaseUntil
     )
       return;
@@ -332,31 +334,51 @@ export function createService({
     });
   }
 
+  /** Advance one session whose work is due: expire, delete the prompt, settle a decision. */
+  async function processSession(candidate: Session): Promise<void> {
+    let session = await repository.getSession(candidate.key);
+    if (!session || session.nonce !== candidate.nonce || session.revision !== candidate.revision)
+      return;
+
+    session = await expire(session);
+    if (session.nonce !== candidate.nonce) return;
+    // Deleting the expired prompt must not depend on a decision API call
+    // succeeding. The cleanup lease also fences concurrent decision work.
+    await cleanupMessage(session, candidate);
+    session = await requiredSession(candidate.key);
+    if (session.nonce !== candidate.nonce) return;
+    if (pending(session)) await settle(session);
+  }
+
   async function maintenance(): Promise<void> {
     const at = now();
     const candidates = await repository.listActionableSessions(at, MAINTENANCE_BATCH_LIMIT);
     for (const candidate of candidates) {
       try {
-        let session = await repository.getSession(candidate.key);
-        if (
-          !session ||
-          session.nonce !== candidate.nonce ||
-          session.revision !== candidate.revision
-        )
-          continue;
-
-        session = await expire(session);
-        if (session.nonce !== candidate.nonce) continue;
-        // Deleting the expired prompt must not depend on a decision API call
-        // succeeding. The cleanup lease also fences concurrent decision work.
-        await cleanupMessage(session, candidate);
-        session = await requiredSession(candidate.key);
-        if (session.nonce !== candidate.nonce) continue;
-        if (pending(session)) await settle(session);
+        await processSession(candidate);
       } catch (caught) {
         console.warn("Maintenance item failed", apiError(caught).code);
       }
     }
+  }
+
+  /**
+   * Run one session's due work for its timer and return when it is next due (null when done).
+   * Does nothing early, so a stale alarm is harmless. A failing call is logged and left to its
+   * persisted retry time; only a failure to read D1 propagates so the alarm is retried.
+   */
+  async function maintainSession(key: string): Promise<number | null> {
+    const found = await repository.getSession(key);
+    if (!found) return null;
+    const due = nextDueAt(found);
+    if (due === null || due > now()) return due;
+    try {
+      await processSession(found);
+    } catch (caught) {
+      console.warn("Session timer item failed", apiError(caught).code);
+    }
+    const latest = await repository.getSession(key);
+    return latest ? nextDueAt(latest) : null;
   }
 
   async function join(request: JoinRequest, ctx: Context = {}) {
@@ -555,5 +577,5 @@ export function createService({
       await display(session, message.chat.id);
     }
   }
-  return { join, callback, start, joinNotice, moderate, maintenance };
+  return { join, callback, start, joinNotice, moderate, maintenance, maintainSession };
 }
