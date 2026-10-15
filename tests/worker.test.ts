@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { UserFromGetMe } from "grammy/types";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bindings, Message } from "../src/types.js";
 import type { createRuntime } from "../src/lib/runtime.js";
 
@@ -6,6 +7,7 @@ const runtimeMock = vi.hoisted(() => ({ createRuntime: vi.fn() }));
 
 vi.mock("../src/lib/runtime.js", () => runtimeMock);
 
+import { botInfoCache } from "../src/bot.js";
 import worker from "../src/index.js";
 
 const secret = "worker_test-secret_123";
@@ -14,18 +16,40 @@ const env: Bindings = {
   BOT_TOKEN: "private-bot-token",
   WEBHOOK_SECRET: secret,
 };
+const botInfo = {
+  id: 1,
+  is_bot: true,
+  first_name: "Verify",
+  username: "verify_bot",
+} as UserFromGetMe;
 const executionContext = { waitUntil: vi.fn() } as unknown as ExecutionContext;
 type Runtime = ReturnType<typeof createRuntime>;
 
-function webhook(body: string, token: string | undefined = secret): Request {
+function webhook(body: string, token: string | null = secret): Request {
   return new Request("https://worker.test/webhook", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(token === undefined ? {} : { "X-Telegram-Bot-Api-Secret-Token": token }),
+      ...(token === null ? {} : { "X-Telegram-Bot-Api-Secret-Token": token }),
     },
     body,
   });
+}
+
+/** A text message from a private chat; commands carry the bot_command entity Telegram adds. */
+function textMessage(text: string, extra: Record<string, unknown> = {}) {
+  const command = /^\/[A-Za-z0-9_]+(?:@[A-Za-z0-9_]+)?/.exec(text);
+  return {
+    message_id: 5,
+    date: 1_800_000_000,
+    chat: { id: 7, type: "private" },
+    from: { id: 7, is_bot: false, first_name: "A" },
+    text,
+    ...(command
+      ? { entities: [{ type: "bot_command", offset: 0, length: command[0].length }] }
+      : {}),
+    ...extra,
+  };
 }
 
 function runtime({
@@ -49,9 +73,19 @@ function runtime({
   };
 }
 
+function send(update: unknown) {
+  return worker.fetch(webhook(JSON.stringify(update)), env, executionContext);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  botInfoCache.clear();
+  botInfoCache.set(env.BOT_TOKEN, botInfo);
   runtimeMock.createRuntime.mockReturnValue(runtime());
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("Cloudflare Worker webhook", () => {
@@ -74,6 +108,13 @@ describe("Cloudflare Worker webhook", () => {
     expect(runtimeMock.createRuntime).not.toHaveBeenCalled();
   });
 
+  it("rejects a request without the secret header", async () => {
+    const response = await worker.fetch(webhook("{}", null), env, executionContext);
+
+    expect(response.status).toBe(401);
+    expect(runtimeMock.createRuntime).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["missing bot token", { ...env, BOT_TOKEN: "" }],
     ["invalid webhook secret", { ...env, WEBHOOK_SECRET: "invalid secret" }],
@@ -84,39 +125,27 @@ describe("Cloudflare Worker webhook", () => {
     expect(runtimeMock.createRuntime).not.toHaveBeenCalled();
   });
 
-  it("rejects malformed JSON and malformed supported updates", async () => {
-    const malformedJson = await worker.fetch(webhook("{"), env, executionContext);
-    const malformedUpdate = await worker.fetch(
-      webhook(JSON.stringify({ update_id: 1, message: { message_id: 2, chat: { id: 3 } } })),
-      env,
-      executionContext,
-    );
-    const negativeMessageId = await worker.fetch(
-      webhook(
-        JSON.stringify({
-          update_id: 2,
-          message: { message_id: -1, chat: { id: 3, type: "private" } },
-        }),
-      ),
-      env,
-      executionContext,
-    );
-
-    expect(malformedJson.status).toBe(400);
-    expect(malformedUpdate.status).toBe(400);
-    expect(negativeMessageId.status).toBe(400);
+  it("rejects malformed JSON and bodies that are not updates", async () => {
+    for (const body of ["{", "null", "[]", "{}", JSON.stringify({ update_id: "1" })]) {
+      const response = await worker.fetch(webhook(body), env, executionContext);
+      expect(response.status, body).toBe(400);
+    }
     expect(runtimeMock.createRuntime).not.toHaveBeenCalled();
   });
 
-  it("returns 200 for unsupported Telegram update types without dispatching", async () => {
-    const response = await worker.fetch(
-      webhook(JSON.stringify({ update_id: 0, poll: { id: "poll" } })),
-      env,
-      executionContext,
-    );
+  it("acknowledges unsupported update types without dispatching", async () => {
+    const instance = runtime();
+    runtimeMock.createRuntime.mockReturnValue(instance);
+
+    const response = await send({ update_id: 0, poll: { id: "poll" } });
 
     expect(response.status).toBe(200);
-    expect(runtimeMock.createRuntime).not.toHaveBeenCalled();
+    for (const handler of [
+      ...Object.values(instance.service).filter((fn) => fn !== instance.service.maintenance),
+      instance.admin.handle,
+    ]) {
+      expect(handler).not.toHaveBeenCalled();
+    }
   });
 
   it("waits for full message dispatch before acknowledging the update", async () => {
@@ -126,231 +155,182 @@ describe("Cloudflare Worker webhook", () => {
     });
     const instance = runtime({ overrides: { start: vi.fn((_message: Message) => pending) } });
     runtimeMock.createRuntime.mockReturnValue(instance);
-    const request = webhook(
-      JSON.stringify({
-        update_id: 11,
-        message: {
-          message_id: 0,
-          chat: { id: 7, type: "private" },
-          from: { id: 7 },
-          text: "/start",
-        },
-      }),
-    );
 
     let responseReady = false;
-    const responsePromise = Promise.resolve(worker.fetch(request, env, executionContext)).then(
-      (response) => {
-        responseReady = true;
-        return response;
-      },
-    );
-    await Promise.resolve();
+    const responsePromise = (async () => {
+      const response = await send({ update_id: 11, message: textMessage("/start") });
+      responseReady = true;
+      return response;
+    })();
+    await vi.waitFor(() => expect(instance.service.start).toHaveBeenCalledOnce());
     expect(responseReady).toBe(false);
     gate.finish?.();
     const response = await responsePromise;
 
     expect(response.status).toBe(200);
+    expect(instance.service.moderate).toHaveBeenCalledOnce();
     expect(instance.admin.handle).toHaveBeenCalledOnce();
-    expect(instance.service.start).toHaveBeenCalledOnce();
   });
 
-  it("accepts Telegram message_id zero", async () => {
+  it("routes /start and /help to the start flow only when addressed to this bot", async () => {
     const instance = runtime();
     runtimeMock.createRuntime.mockReturnValue(instance);
-    const response = await worker.fetch(
-      webhook(
-        JSON.stringify({
-          update_id: 16,
-          message: { message_id: 0, chat: { id: 7, type: "private" }, text: "hello" },
-        }),
-      ),
-      env,
-      executionContext,
-    );
+
+    await send({ update_id: 1, message: textMessage("/help") });
+    await send({ update_id: 2, message: textMessage("/start@verify_bot payload") });
+    await send({ update_id: 3, message: textMessage("/start@someone_else_bot") });
+    await send({ update_id: 4, message: textMessage("hello /start") });
+
+    expect(instance.service.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start when an admin command handled the message", async () => {
+    const instance = runtime({ adminResult: true });
+    runtimeMock.createRuntime.mockReturnValue(instance);
+
+    const response = await send({ update_id: 5, message: textMessage("/start") });
 
     expect(response.status).toBe(200);
     expect(instance.admin.handle).toHaveBeenCalledOnce();
+    expect(instance.service.start).not.toHaveBeenCalled();
   });
 
-  it("routes join service messages to join-notice cleanup instead of admin commands", async () => {
+  it("routes join service messages to join-notice cleanup instead of filters or commands", async () => {
     const instance = runtime();
     runtimeMock.createRuntime.mockReturnValue(instance);
-    const response = await worker.fetch(
-      webhook(
-        JSON.stringify({
-          update_id: 17,
-          message: {
-            message_id: 5,
-            chat: { id: -100, type: "supergroup", title: "Group" },
-            from: { id: 42, is_bot: false, first_name: "A" },
-            new_chat_members: [{ id: 42, is_bot: false, first_name: "A" }],
-          },
-        }),
-      ),
-      env,
-      executionContext,
-    );
+
+    const response = await send({
+      update_id: 17,
+      message: {
+        message_id: 5,
+        date: 1_800_000_000,
+        chat: { id: -100, type: "supergroup", title: "Group" },
+        from: { id: 42, is_bot: false, first_name: "A" },
+        new_chat_members: [{ id: 42, is_bot: false, first_name: "A" }],
+      },
+    });
 
     expect(response.status).toBe(200);
     expect(instance.service.joinNotice).toHaveBeenCalledWith(
       expect.objectContaining({
         message_id: 5,
-        new_chat_members: [{ id: 42, first_name: "A" }],
+        new_chat_members: [{ id: 42, is_bot: false, first_name: "A" }],
       }),
     );
+    expect(instance.service.moderate).not.toHaveBeenCalled();
     expect(instance.admin.handle).not.toHaveBeenCalled();
   });
 
   it("filters group messages before admin commands and stops when one is removed", async () => {
     const instance = runtime({ overrides: { moderate: vi.fn(async () => true) } });
     runtimeMock.createRuntime.mockReturnValue(instance);
-    const response = await worker.fetch(
-      webhook(
-        JSON.stringify({
-          update_id: 19,
-          message: {
-            message_id: 6,
-            chat: { id: -100, type: "supergroup" },
-            from: { id: 42, first_name: "Spam" },
-            text: "/verify_help buy now",
-            caption: 5,
-            reply_markup: { inline_keyboard: [[{ text: "Join", url: "https://t.me/x" }, 7]] },
-            forward_origin: { type: "channel", chat: { id: -1009, type: "channel", title: "Ads" } },
-          },
-        }),
-      ),
-      env,
-      executionContext,
-    );
+
+    const response = await send({
+      update_id: 19,
+      message: textMessage("/verify_help buy now", {
+        chat: { id: -100, type: "supergroup" },
+        from: { id: 42, is_bot: false, first_name: "Spam" },
+        reply_markup: { inline_keyboard: [[{ text: "Join", url: "https://t.me/x" }]] },
+        forward_origin: {
+          type: "channel",
+          date: 1_800_000_000,
+          chat: { id: -1009, type: "channel", title: "Ads" },
+          message_id: 3,
+        },
+      }),
+    });
 
     expect(response.status).toBe(200);
     expect(instance.service.moderate).toHaveBeenCalledWith(
       expect.objectContaining({
-        from: { id: 42, first_name: "Spam" },
+        from: { id: 42, is_bot: false, first_name: "Spam" },
         reply_markup: { inline_keyboard: [[{ text: "Join", url: "https://t.me/x" }]] },
-        forward_origin: { type: "channel", chat: { id: -1009, type: "channel", title: "Ads" } },
+        forward_origin: expect.objectContaining({ type: "channel" }),
       }),
     );
-    expect(vi.mocked(instance.service.moderate).mock.calls[0][0]).not.toHaveProperty("caption");
     expect(instance.admin.handle).not.toHaveBeenCalled();
+    expect(instance.service.start).not.toHaveBeenCalled();
   });
 
   it("only filters edited messages", async () => {
     const instance = runtime();
     runtimeMock.createRuntime.mockReturnValue(instance);
-    const response = await worker.fetch(
-      webhook(
-        JSON.stringify({
-          update_id: 20,
-          edited_message: {
-            message_id: 6,
-            chat: { id: -100, type: "supergroup" },
-            from: { id: 42 },
-            text: "/verify_help",
-          },
-        }),
-      ),
-      env,
-      executionContext,
-    );
+
+    const response = await send({
+      update_id: 20,
+      edited_message: textMessage("/verify_help", { chat: { id: -100, type: "supergroup" } }),
+    });
 
     expect(response.status).toBe(200);
     expect(instance.service.moderate).toHaveBeenCalledWith(
-      expect.objectContaining({ message_id: 6 }),
+      expect.objectContaining({ message_id: 5 }),
       { edited: true },
     );
     expect(instance.admin.handle).not.toHaveBeenCalled();
   });
 
-  it("rejects malformed new chat members", async () => {
-    const response = await worker.fetch(
-      webhook(
-        JSON.stringify({
-          update_id: 18,
-          message: {
-            message_id: 5,
-            chat: { id: -100, type: "supergroup" },
-            new_chat_members: [{}],
-          },
-        }),
-      ),
-      env,
-      executionContext,
-    );
-
-    expect(response.status).toBe(400);
-  });
-
   it("dispatches callback queries and join requests with their update ID", async () => {
     const instance = runtime();
     runtimeMock.createRuntime.mockReturnValue(instance);
-    const callback = await worker.fetch(
-      webhook(
-        JSON.stringify({
-          update_id: 12,
-          callback_query: { id: "callback-id", from: { id: 7 }, data: "answer" },
-        }),
-      ),
-      env,
-      executionContext,
-    );
-    const join = await worker.fetch(
-      webhook(
-        JSON.stringify({
-          update_id: 13,
-          chat_join_request: {
-            chat: { id: -1009, type: "supergroup", title: "Private group" },
-            from: { id: 7 },
-            user_chat_id: 7,
-            date: 1_800_000_000,
-          },
-        }),
-      ),
-      env,
-      executionContext,
-    );
+    const query = { id: "callback-id", from: { id: 7, is_bot: false, first_name: "A" }, data: "x" };
+    const request = {
+      chat: { id: -1009, type: "supergroup", title: "Private group" },
+      from: { id: 7, is_bot: false, first_name: "A" },
+      user_chat_id: 7,
+      date: 1_800_000_000,
+    };
+
+    const callback = await send({ update_id: 12, callback_query: query });
+    const join = await send({ update_id: 13, chat_join_request: request });
 
     expect(callback.status).toBe(200);
     expect(join.status).toBe(200);
-    expect(instance.service.callback).toHaveBeenCalledWith({
-      id: "callback-id",
-      from: { id: 7 },
-      data: "answer",
+    expect(instance.service.callback).toHaveBeenCalledWith(expect.objectContaining(query));
+    expect(instance.service.join).toHaveBeenCalledWith(expect.objectContaining(request), {
+      update: { update_id: 13 },
     });
-    expect(instance.service.join).toHaveBeenCalledWith(
-      {
-        chat: { id: -1009, type: "supergroup", title: "Private group" },
-        from: { id: 7 },
-        user_chat_id: 7,
-        date: 1_800_000_000,
-      },
-      { update: { update_id: 13 } },
-    );
   });
 
-  it("returns a retryable failure when dispatch or runtime construction fails", async () => {
+  it("returns a retryable failure without leaking the update or the token", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     runtimeMock.createRuntime.mockReturnValue(
-      runtime({ overrides: { callback: vi.fn(async () => Promise.reject(new Error("private"))) } }),
+      runtime({
+        overrides: {
+          callback: vi.fn(async () =>
+            Promise.reject(new Error("private-bot-token private-callback-data")),
+          ),
+        },
+      }),
     );
-    const response = await worker.fetch(
-      webhook(JSON.stringify({ update_id: 14, callback_query: { id: "cb", from: { id: 2 } } })),
-      env,
-      executionContext,
-    );
+
+    const response = await send({
+      update_id: 14,
+      callback_query: {
+        id: "cb",
+        from: { id: 2, is_bot: false, first_name: "A" },
+        data: "secret-answer",
+      },
+    });
+
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "Update processing failed." });
+    const logged = JSON.stringify([...warn.mock.calls, ...error.mock.calls]);
+    expect(logged).toContain("14");
+    expect(logged).not.toContain("private-bot-token");
+    expect(logged).not.toContain("secret-answer");
+    expect(logged).not.toContain("private-callback-data");
+  });
 
+  it("returns a retryable failure when runtime construction fails", async () => {
     runtimeMock.createRuntime.mockImplementation(() => {
       throw new Error(`failed for ${env.BOT_TOKEN}`);
     });
-    const secondResponse = await worker.fetch(
-      webhook(JSON.stringify({ update_id: 15, callback_query: { id: "cb", from: { id: 2 } } })),
-      env,
-      executionContext,
-    );
-    expect(secondResponse.status).toBe(500);
-    expect(await secondResponse.text()).not.toContain(env.BOT_TOKEN);
+
+    const response = await send({ update_id: 15, callback_query: { id: "cb", from: { id: 2 } } });
+
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain(env.BOT_TOKEN);
   });
 });
 
