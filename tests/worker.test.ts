@@ -1,7 +1,7 @@
 import type { UserFromGetMe } from "grammy/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminCommand } from "../src/lib/admin.js";
-import type { Bindings, Message } from "../src/types.js";
+import type { Bindings, CallbackQuery, Message } from "../src/types.js";
 import type { createRuntime } from "../src/lib/runtime.js";
 
 const runtimeMock = vi.hoisted(() => ({ createRuntime: vi.fn() }));
@@ -63,6 +63,7 @@ function runtime({
       handle: vi.fn(async (_message: Message, _command: AdminCommand) => {}),
       chatShared: vi.fn(async (_message: Message) => {}),
       open: vi.fn(async (_message: Message, _payload: string) => false),
+      callback: vi.fn(async (_query: CallbackQuery) => {}),
     },
     service: {
       start: vi.fn(async (_message: Message) => {}),
@@ -151,6 +152,7 @@ describe("Cloudflare Worker webhook", () => {
       instance.admin.handle,
       instance.admin.chatShared,
       instance.admin.open,
+      instance.admin.callback,
     ]) {
       expect(handler).not.toHaveBeenCalled();
     }
@@ -330,6 +332,25 @@ describe("Cloudflare Worker webhook", () => {
       { edited: true },
     );
     expect(instance.admin.handle).not.toHaveBeenCalled();
+  });
+
+  it("sends settings-panel buttons to the admin handler and quiz buttons to the service", async () => {
+    const instance = runtime();
+    runtimeMock.createRuntime.mockReturnValue(instance);
+    const from = { id: 7, is_bot: false, first_name: "A" };
+
+    await send({
+      update_id: 40,
+      callback_query: { id: "panel", from, data: "c:s1234567890:to" },
+    });
+    await send({ update_id: 41, callback_query: { id: "quiz", from, data: "q:nonce:0:1" } });
+
+    expect(instance.admin.callback).toHaveBeenCalledOnce();
+    expect(instance.admin.callback).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "panel", data: "c:s1234567890:to" }),
+    );
+    expect(instance.service.callback).toHaveBeenCalledOnce();
+    expect(instance.service.callback).toHaveBeenCalledWith(expect.objectContaining({ id: "quiz" }));
   });
 
   it("dispatches callback queries and join requests with their update ID", async () => {

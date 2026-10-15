@@ -28,6 +28,8 @@ export function createBot(env: Bindings): Bot {
   bot.on("chat_join_request", (ctx) =>
     service.join(ctx.chatJoinRequest, { update: { update_id: ctx.update.update_id } }),
   );
+  // Settings-panel buttons (`c:`) come before the quiz buttons' catch-all.
+  bot.callbackQuery(/^c:/, (ctx) => admin.callback(ctx.callbackQuery));
   bot.on("callback_query", (ctx) => service.callback(ctx.callbackQuery));
   bot.on("edited_message", (ctx) => service.moderate(ctx.editedMessage, { edited: true }));
   // Join service messages are cleaned up, never filtered or treated as commands.

@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import type { BotApi, Config, ContentPack, Member, Message, Repository } from "../src/types.js";
+import type {
+  BotApi,
+  CallbackQuery,
+  Config,
+  ContentPack,
+  Member,
+  Message,
+  Repository,
+} from "../src/types.js";
 
 import { ADMIN_COMMANDS, createAdmin, type AdminCommand } from "../src/lib/admin.ts";
 import { DEFAULT_CONFIG } from "../src/lib/quiz.ts";
@@ -57,7 +65,13 @@ function privateMessage(text: string, extra: Partial<Message> = {}): Message {
 
 type AdminApi = Pick<
   BotApi,
-  "sendMessage" | "getMe" | "getChat" | "getChatMember" | "createChatInviteLink"
+  | "sendMessage"
+  | "editMessageText"
+  | "answerCallbackQuery"
+  | "getMe"
+  | "getChat"
+  | "getChatMember"
+  | "createChatInviteLink"
 >;
 type AdminRepository = Pick<
   Repository,
@@ -101,6 +115,8 @@ function setup({
       message_id: 1,
       chat: { id: GROUP_ID, type: "supergroup" },
     }),
+    editMessageText: vi.fn<BotApi["editMessageText"]>().mockResolvedValue(true),
+    answerCallbackQuery: vi.fn<BotApi["answerCallbackQuery"]>().mockResolvedValue(true),
     getMe: vi.fn<BotApi["getMe"]>().mockResolvedValue({ id: BOT_ID, username: "verify_bot" }),
     getChat: vi
       .fn<BotApi["getChat"]>()
@@ -750,7 +766,9 @@ describe("createAdmin", () => {
         true,
       );
       expect(allowed.targets.get(ADMIN_ID)).toEqual({ groupId: GROUP_ID, at: NOW });
-      expect(lastText(allowed.api)).toContain("Now managing");
+      expect(allowed.api.sendMessage.mock.calls[0][0].text).toContain("Now managing");
+      // The settings panel follows the confirmation.
+      expect(lastText(allowed.api)).toContain("入群验证");
 
       const denied = setup({ member: { status: "member" } });
       await expect(denied.admin.open(privateMessage("/start g100123"), "g100123")).resolves.toBe(
@@ -788,6 +806,263 @@ describe("createAdmin", () => {
         });
       }
       expect(api.sendMessage).toHaveBeenCalledTimes(4);
+    });
+  });
+
+  describe("settings panel", () => {
+    const REF = "g100123";
+    const panelMessage = (extra: Partial<Message> = {}): Message => ({
+      message_id: 77,
+      chat: { id: ADMIN_ID, type: "private" },
+      from: { id: 99 },
+      ...extra,
+    });
+    const tap = (
+      admin: ReturnType<typeof setup>["admin"],
+      action: string,
+      extra: Partial<CallbackQuery> = {},
+    ) =>
+      admin.callback({
+        id: "cb",
+        from: { id: ADMIN_ID, language_code: "en" },
+        data: `c:${REF}:${action}`,
+        message: panelMessage(),
+        ...extra,
+      });
+    const toast = (api: ReturnType<typeof setup>["api"]) =>
+      api.answerCallbackQuery.mock.lastCall![0].text;
+    const keyboardData = (api: ReturnType<typeof setup>["api"]) =>
+      (
+        api.editMessageText.mock.lastCall![0].reply_markup!.inline_keyboard as {
+          callback_data: string;
+        }[][]
+      )
+        .flat()
+        .map((button) => button.callback_data);
+
+    it("opens the panel for /verify_config without options in a private chat", async () => {
+      const { api, handle } = setup({
+        config: { language: "en" },
+        selected: { groupId: GROUP_ID },
+      });
+
+      await handle(privateMessage("/verify_config"));
+
+      const [call] = api.sendMessage.mock.lastCall!;
+      expect(call.chat_id).toBe(ADMIN_ID);
+      expect(call.text).toContain(`Managing: Test group (${GROUP_ID})`);
+      expect(call.text).toContain("Join verification: Disabled");
+      expect(call.text).toContain("Next steps:");
+      expect(call.reply_markup).toEqual({
+        inline_keyboard: expect.arrayContaining([
+          [expect.objectContaining({ callback_data: `c:${REF}:en`, text: "Enable verification" })],
+        ]),
+      });
+    });
+
+    it("keeps the plain settings text in a group chat", async () => {
+      const { api, handle } = setup({ config: { language: "en" } });
+
+      await handle(groupMessage("/verify_config"));
+
+      const [call] = api.sendMessage.mock.lastCall!;
+      expect(call.text).not.toContain("Managing:");
+      expect(call.reply_markup).toEqual({
+        inline_keyboard: [[expect.objectContaining({ url: expect.stringContaining("?start=") })]],
+      });
+    });
+
+    it("keeps every callback_data within Telegram's 64 byte limit", async () => {
+      const { api, handle } = setup({
+        config: { language: "en" },
+        selected: { groupId: GROUP_ID },
+      });
+      await handle(privateMessage("/verify_config"));
+      const buttons = (
+        api.sendMessage.mock.lastCall![0].reply_markup as {
+          inline_keyboard: { callback_data: string }[][];
+        }
+      ).inline_keyboard.flat();
+
+      expect(buttons).toHaveLength(10);
+      for (const { callback_data } of buttons)
+        expect(new TextEncoder().encode(callback_data).length).toBeLessThanOrEqual(64);
+    });
+
+    it("cycles a setting, saves it and edits the panel in place", async () => {
+      const { api, repository, admin } = setup({ config: { language: "en" } });
+
+      await tap(admin, "to");
+
+      expect(repository.saveConfig).toHaveBeenCalledWith(
+        GROUP_ID,
+        expect.objectContaining({ timeoutSeconds: 600 }),
+      );
+      expect(toast(api)).toBe("Updated.");
+      expect(api.editMessageText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chat_id: ADMIN_ID,
+          message_id: 77,
+          text: expect.stringContaining("600"),
+          reply_markup: expect.anything(),
+        }),
+      );
+      expect(keyboardData(api)).toContain(`c:${REF}:rf`);
+      expect(repository.setAdminTarget).toHaveBeenCalledWith(ADMIN_ID, GROUP_ID, NOW);
+    });
+
+    it("switches the language of the whole panel", async () => {
+      const { api, repository, admin } = setup({ config: { language: "en" } });
+
+      await tap(admin, "lg");
+
+      expect(repository.saveConfig).toHaveBeenCalledWith(
+        GROUP_ID,
+        expect.objectContaining({ language: "cn" }),
+      );
+      expect(api.editMessageText).toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining("正在管理") }),
+      );
+    });
+
+    it("enables verification only when the preconditions hold, and disables it freely", async () => {
+      const ok = setup({ config: { language: "en" } });
+      await tap(ok.admin, "en");
+      expect(ok.repository.saveConfig).toHaveBeenCalledWith(
+        GROUP_ID,
+        expect.objectContaining({ enabled: true }),
+      );
+
+      const noPack = setup({ config: { language: "en" }, pack: null });
+      await tap(noPack.admin, "en");
+      expect(noPack.repository.saveConfig).not.toHaveBeenCalled();
+      expect(toast(noPack.api)).toContain("Cannot change:");
+
+      const noBotAdmin = setup({ config: { language: "en" }, botMember: { status: "member" } });
+      await tap(noBotAdmin.admin, "en");
+      expect(noBotAdmin.repository.saveConfig).not.toHaveBeenCalled();
+
+      const enabled = setup({ config: { language: "en", enabled: true } });
+      await tap(enabled.admin, "en");
+      expect(enabled.repository.saveConfig).toHaveBeenCalledWith(
+        GROUP_ID,
+        expect.objectContaining({ enabled: false }),
+      );
+    });
+
+    it("sends the invite link as a new message and leaves the settings alone", async () => {
+      const { api, repository, admin } = setup({ config: { language: "en", enabled: true } });
+
+      await tap(admin, "iv");
+
+      expect(api.createChatInviteLink).toHaveBeenCalledWith(
+        expect.objectContaining({ chat_id: GROUP_ID, creates_join_request: true }),
+      );
+      expect(api.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chat_id: ADMIN_ID,
+          text: expect.stringContaining("https://t.me/+TEST_PRIVATE_LINK"),
+        }),
+      );
+      expect(repository.saveConfig).not.toHaveBeenCalled();
+      expect(toast(api)).toBe("The invite link was sent as a new message.");
+
+      const disabled = setup({ config: { language: "en", enabled: false } });
+      await tap(disabled.admin, "iv");
+      expect(disabled.api.createChatInviteLink).not.toHaveBeenCalled();
+    });
+
+    it("refreshes without saving", async () => {
+      const { repository, api, admin } = setup({ config: { language: "en" } });
+
+      await tap(admin, "rf");
+
+      expect(repository.saveConfig).not.toHaveBeenCalled();
+      expect(api.editMessageText).toHaveBeenCalledOnce();
+    });
+
+    it("ignores Telegram's 'message is not modified' error", async () => {
+      const { api, admin } = setup({ config: { language: "en" } });
+      api.editMessageText.mockRejectedValue(
+        Object.assign(new Error("x"), {
+          code: 400,
+          description: "Bad Request: message is not modified",
+        }),
+      );
+
+      await expect(tap(admin, "rf")).resolves.toBeUndefined();
+
+      api.editMessageText.mockRejectedValue(Object.assign(new Error("x"), { code: 500 }));
+      await expect(tap(admin, "rf")).rejects.toThrow();
+    });
+
+    it("re-verifies the administrator on every tap", async () => {
+      const { api, repository, admin } = setup({ member: { status: "member" } });
+
+      await tap(admin, "to");
+
+      expect(repository.saveConfig).not.toHaveBeenCalled();
+      expect(api.editMessageText).not.toHaveBeenCalled();
+      expect(toast(api)).toContain("no longer an administrator");
+
+      const gone = setup();
+      gone.api.getChatMember.mockRejectedValue(Object.assign(new Error("x"), { code: 403 }));
+      await tap(gone.admin, "to");
+      expect(gone.repository.saveConfig).not.toHaveBeenCalled();
+      expect(toast(gone.api)).toContain("not found");
+    });
+
+    it("always answers the callback and rejects malformed or foreign buttons", async () => {
+      const { api, repository, admin } = setup();
+
+      await tap(admin, "zz");
+      await tap(admin, "to", { data: "c:x123:to" });
+      await tap(admin, "to", { data: undefined });
+      await tap(admin, "to", { message: undefined });
+      await tap(admin, "to", {
+        message: panelMessage({ chat: { id: GROUP_ID, type: "supergroup" } }),
+      });
+      await tap(admin, "to", { from: { id: 12345 }, message: panelMessage() });
+
+      expect(api.answerCallbackQuery).toHaveBeenCalledTimes(6);
+      expect(repository.saveConfig).not.toHaveBeenCalled();
+      expect(api.editMessageText).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("next-step hints", () => {
+    it("append hints to private replies but not to group replies", async () => {
+      const dm = setup({ config: { language: "en" }, selected: { groupId: GROUP_ID } });
+      await dm.handle(privateMessage("/verify_status"));
+      expect(dm.api.sendMessage.mock.lastCall![0].text).toContain(
+        "Next steps:\n- Run /verify_enable",
+      );
+
+      await dm.handle(privateMessage("/verify_enable"));
+      expect(dm.api.sendMessage.mock.lastCall![0].text).toContain("- Get the approval invite link");
+
+      await dm.handle(privateMessage("/verify_config timeoutSeconds=60"));
+      expect(dm.api.sendMessage.mock.lastCall![0].text).toContain("Verification settings updated.");
+
+      const group = setup({ config: { language: "en" } });
+      await group.handle(groupMessage("/verify_status"));
+      expect(group.api.sendMessage.mock.lastCall![0].text).not.toContain("Next steps:");
+    });
+
+    it("point at missing bot rights and content", async () => {
+      const { api, handle } = setup({
+        config: { language: "en", enabled: true, deleteJoinMessages: true },
+        pack: null,
+        botMember: { status: "member" },
+        selected: { groupId: GROUP_ID },
+      });
+
+      await handle(privateMessage("/verify_status"));
+
+      const text = api.sendMessage.mock.lastCall![0].text;
+      expect(text).toContain("No valid question pack");
+      expect(text).toContain("Make the bot a group administrator");
+      expect(text).toContain("delete-messages permission");
     });
   });
 });
