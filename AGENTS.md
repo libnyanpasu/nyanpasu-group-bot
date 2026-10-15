@@ -3,9 +3,10 @@
 This is a Telegram join verification bot on Cloudflare Workers with no frontend.
 
 - Edit strict TypeScript in src/. dist/ is generated and must never hold handwritten changes. Shared interfaces live in src/types.d.ts.
-- Use Hono for the webhook, Drizzle with D1 for storage, and fetch for Telegram Bot API calls. Runtime code must use Workers APIs rather than Node.js filesystem or process APIs.
+- Use Hono for the webhook, grammY (`Bot`, `Composer`, `Api`) for Telegram Bot API calls, update routing and Telegram types, and Drizzle with D1 for storage. Prefer an existing grammY feature or plugin over new hand-written Telegram plumbing; keep custom code for session CAS/leases, persistence and quiz/spam logic. Runtime code must use Workers APIs rather than Node.js filesystem or process APIs, so check that a plugin bundles for Workers before adopting it (`@grammyjs/i18n` does not: it pulls in Deno shims).
 - All database calls are async. Persist answers with revision CAS and API decisions before sending. Do not assume a transaction spans D1 and Telegram.
-- Authenticate webhook requests before parsing their bodies. Await processing before acknowledging updates; return a retryable error on failed processing. Cron maintenance handles overdue sessions, pending decisions and message deletion.
+- Authenticate webhook requests before parsing their bodies: check `X-Telegram-Bot-Api-Secret-Token` in our own Hono middleware before grammY's `webhookCallback`, which reads the body first and accepts every request when no secret is set. Await processing before acknowledging updates; return a retryable error on failed processing, so never swallow handler errors in `bot.catch`, never use `onTimeout: "return"`, and keep webhook replies disabled (`canUseWebhookReply: () => false`) because decisions must be persisted around the real API result. Cron maintenance handles overdue sessions, pending decisions and message deletion.
+- Log Telegram failures by method name and error code only; never log tokens, grammY error payloads or `HttpError.error`. Retry only 429 inside a request (`@grammyjs/auto-retry` with `rethrowInternalServerErrors` and `rethrowHttpErrors`); every other ambiguous failure stays pending in D1.
 - Keep prompts localized in en and cn. Question translations share an answer index and option count. Correct answers must never appear in public UI.
 - Use oxlint and oxfmt. Run pnpm check before delivering changes.
 - Tests run source using Vitest and real SQLite adapters; validate D1 SQL using local Wrangler migrations.

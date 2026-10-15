@@ -26,7 +26,9 @@
     "webhook:info": "node --env-file-if-exists=.dev.vars scripts/telegram-webhook.ts info"
   },
   "dependencies": {
+    "@grammyjs/auto-retry": "^2.0.2",
     "drizzle-orm": "^0.45.4",
+    "grammy": "^1.46.0",
     "hono": "^4.13.13"
   },
   "devDependencies": {
