@@ -50,14 +50,13 @@ pnpm exec wrangler d1 create nyanpasu-group-bot
 
 Copy the returned `database_id` into the `DB` binding in `wrangler.jsonc`. Keep the database name in sync with the migration scripts.
 
-3. Apply the D1 migrations and deploy the code:
+3. Deploy the code. The deploy command applies pending remote D1 migrations before publishing the Worker:
 
 ```sh
-pnpm db:migrate:remote
 pnpm run deploy
 ```
 
-`pnpm run deploy` runs the full check and deploys the Worker. Code deployment never changes D1; apply migrations first and register the webhook afterwards. Upgrading from a version before `0003_admin_targets` needs the same `pnpm db:migrate:remote` step before the new code handles updates, because `/verify_groups` stores the selected group in `admin_targets`.
+`pnpm run deploy` applies pending remote D1 migrations without Wrangler's interactive confirmation, then deploys the Worker; run `pnpm check` separately when you want the full validation suite. Wrangler still captures a D1 backup and rolls back a migration that fails. D1 may be unavailable while migrations run. If a migration succeeds but Worker deployment later fails, the database stays migrated, so keep migrations compatible with the currently deployed code and use an expand-and-contract rollout for incompatible changes. Upgrading from a version before `0003_admin_targets` needs no separate migration command; deploy applies it before publishing code that uses `admin_targets`.
 
 4. Set production secrets:
 
