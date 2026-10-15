@@ -68,6 +68,7 @@ type AdminApi = Pick<
   | "sendMessage"
   | "editMessageText"
   | "answerCallbackQuery"
+  | "setMyCommands"
   | "getMe"
   | "getChat"
   | "getChatMember"
@@ -117,6 +118,7 @@ function setup({
     }),
     editMessageText: vi.fn<BotApi["editMessageText"]>().mockResolvedValue(true),
     answerCallbackQuery: vi.fn<BotApi["answerCallbackQuery"]>().mockResolvedValue(true),
+    setMyCommands: vi.fn<BotApi["setMyCommands"]>().mockResolvedValue(true),
     getMe: vi.fn<BotApi["getMe"]>().mockResolvedValue({ id: BOT_ID, username: "verify_bot" }),
     getChat: vi
       .fn<BotApi["getChat"]>()
@@ -1112,6 +1114,65 @@ describe("createAdmin", () => {
       await admin.welcome(groupMessage("/help"));
 
       expect(api.sendMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("command menus", () => {
+    it("shows the management commands once a group is chosen, in both languages", async () => {
+      const { api, admin } = setup();
+
+      await admin.chatShared(
+        privateMessage("", { text: undefined, chat_shared: { request_id: 1, chat_id: GROUP_ID } }),
+      );
+
+      expect(api.setMyCommands).toHaveBeenCalledTimes(2);
+      const [english, chinese] = api.setMyCommands.mock.calls.map(([input]) => input);
+      expect(english.scope).toEqual({ type: "chat", chat_id: ADMIN_ID });
+      expect(english.language_code).toBeUndefined();
+      expect(chinese.language_code).toBe("zh");
+      expect(english.commands.map((entry) => entry.command)).toEqual(
+        expect.arrayContaining([
+          "verify_status",
+          "verify_config",
+          "verify_invite",
+          "verify_groups",
+        ]),
+      );
+      expect(chinese.commands[0].description).toMatch(/[\u4e00-\u9fff]/);
+    });
+
+    it("falls back to the plain private menu when the selection is cleared", async () => {
+      const { api, handle } = setup({ selected: { groupId: GROUP_ID } });
+
+      await handle(privateMessage("/verify_groups clear"));
+
+      const [english] = api.setMyCommands.mock.calls.map(([input]) => input);
+      expect(english.commands.map((entry) => entry.command)).toEqual([
+        "start",
+        "help",
+        "verify_groups",
+      ]);
+    });
+
+    it("never fails the request when Telegram rejects the menu", async () => {
+      const { api, admin, targets } = setup();
+      api.setMyCommands.mockRejectedValue(Object.assign(new Error("secret detail"), { code: 400 }));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await admin.open(privateMessage("/start g100123"), "g100123");
+
+      expect(targets.has(ADMIN_ID)).toBe(true);
+      expect(warn).toHaveBeenCalledWith("setMyCommands failed", 400);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("secret detail");
+      warn.mockRestore();
+    });
+
+    it("leaves menus alone when a group is not selected", async () => {
+      const { api, admin } = setup({ member: { status: "member" } });
+
+      await admin.open(privateMessage("/start g100123"), "g100123");
+
+      expect(api.setMyCommands).not.toHaveBeenCalled();
     });
   });
 });

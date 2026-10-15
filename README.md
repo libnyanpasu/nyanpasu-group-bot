@@ -57,7 +57,7 @@ pnpm db:migrate:remote
 pnpm run deploy
 ```
 
-`pnpm run deploy` runs the full check and deploys the Worker. Code deployment never changes D1; apply migrations first and register the webhook afterwards.
+`pnpm run deploy` runs the full check and deploys the Worker. Code deployment never changes D1; apply migrations first and register the webhook afterwards. Upgrading from a version before `0003_admin_targets` needs the same `pnpm db:migrate:remote` step before the new code handles updates, because `/verify_groups` stores the selected group in `admin_targets`.
 
 4. Set production secrets:
 
@@ -79,6 +79,8 @@ pnpm webhook:info
 
 The helper registers `/webhook`, the four required update types (`message`, `edited_message`, `callback_query` and `chat_join_request`) and the secret header without dropping pending updates. Rerun `pnpm webhook:set` after upgrading from a version that did not subscribe to `edited_message`. A custom HTTPS domain also works. Do not put interactive Cloudflare Access in front of the Telegram webhook.
 
+Then run `pnpm commands:set` once after deploying. Like `pnpm webhook:set`, it reads `BOT_TOKEN` from `.dev.vars`, and it registers the "/" command menus in English and Chinese (`zh`) from the descriptions in `src/lib/commands.ts`. It changes only what Telegram displays, so no webhook change is needed; rerun it when the descriptions change. The menus are not access control: every command still checks the caller's rights.
+
 6. Import the question bank into the production D1. The checkout is a normal clone of the private question repository (for example `git clone git@github.com:libnyanpasu/nyanpasu-verify-question.git private-content`); it is not part of this repository:
 
 ```sh
@@ -92,20 +94,23 @@ Content changes take effect on the next join request without redeploying the Wor
 ## Group setup
 
 1. Add the bot to the private group and promote it to an administrator with the invite-user permission.
-2. Send `/verify_status` in the group to confirm the content versions and permissions, and note the numeric group ID.
-3. Configure and enable:
+2. Send `/verify_status` in the group to confirm the content versions and permissions. The reply has a **Manage in private chat** button that opens the group in a private chat with the bot.
+3. In a private chat with the bot, send `/verify_groups` and tap **Choose a group**. Telegram offers only groups where you are an administrator with invite-user permission and the bot is a member; the bot checks your rights again before it remembers the group. The selection lasts 24 hours without any command, and each command renews it. `/verify_groups clear` forgets it.
+4. Configure and enable the selected group in the same private chat. No group ID is needed:
 
 ```text
 /verify_config language=en timeoutSeconds=300 cooldownSeconds=1800
 /verify_enable
 ```
 
-4. A group administrator starts the bot privately with `/start`, then sends `/verify_invite -100GROUP_ID` to obtain an approval-required invite link.
-5. Optionally send `/verify_config deleteJoinMessages=on` to delete Telegram's "joined the group" service messages. This works independently of `/verify_enable` and requires the bot's delete-messages permission; the bot warns when that permission is missing. `deleteJoinMessages=off` keeps them again, and `deleteJoinMessages=default` follows the Worker-wide `DELETE_JOIN_MESSAGES` variable (see [Deployment](#deployment)).
-6. Optionally enable the spam filter, for example `/verify_config spamMode=new spamFirstMessages=3 spamBan=on spamCas=on`. See [Spam filter](#spam-filter).
-7. Share the approval link and revoke old links that admit users without approval. Other administrators can still bypass verification by direct invitation or manual approval; agree on a process for that.
+Sending `/verify_config` with no options opens a settings panel with buttons for these settings. `/verify_status` shows the group ID and the active content/rules versions.
 
-No public group or group username is required. Admin commands are `/verify_help`, `/verify_status`, `/verify_config`, `/verify_enable`, `/verify_disable` and `/verify_invite`; target a group by ID in private chat and omit it inside the group. Questions and rules are managed through private content, not commands. See [Private group setup](docs/private-group-setup.md) for details.
+5. In the private chat, send `/verify_invite` (or tap **Get invite link** in the panel) to obtain an approval-required invite link. The link is returned only in the private chat, never in the group.
+6. Optionally send `/verify_config deleteJoinMessages=on` to delete Telegram's "joined the group" service messages. This works independently of `/verify_enable` and requires the bot's delete-messages permission; the bot warns when that permission is missing. `deleteJoinMessages=off` keeps them again, and `deleteJoinMessages=default` follows the Worker-wide `DELETE_JOIN_MESSAGES` variable (see [Deployment](#deployment)).
+7. Optionally enable the spam filter, for example `/verify_config spamMode=new spamFirstMessages=3 spamBan=on spamCas=on`. See [Spam filter](#spam-filter).
+8. Share the approval link and revoke old links that admit users without approval. Other administrators can still bypass verification by direct invitation or manual approval; agree on a process for that.
+
+No public group or group username is required. Admin commands are `/verify_help`, `/verify_status`, `/verify_config`, `/verify_enable`, `/verify_disable` and `/verify_invite`, plus `/verify_groups` to choose a group in a private chat. In a private chat they act on the selected group, so no group ID is needed; an explicit ID after the command (for example `/verify_status -100…`) also works and becomes the selection. Inside the group no ID is needed. Every command re-checks administrator rights, and shared IDs and button data are never trusted. Questions and rules are managed through private content, not commands. See [Private group setup](docs/private-group-setup.md) for details.
 
 ## Runtime and consistency
 
@@ -115,7 +120,7 @@ A per-session Durable Object alarm declines overdue requests, retries unfinished
 
 The webhook returns 2xx only after processing completes and returns a retryable error when processing fails. Telegram may still deliver updates more than once. Existing sessions keep their private question and rules snapshots across deployments, and `/verify_disable` only stops new sessions: existing verification and maintenance continue.
 
-D1 stores the group configuration, session snapshots, the content bank, spam blocklists and per-group message counts for the spam filter. Session payloads keep their own question and rules snapshots, so content updates never change in-flight verifications. There is no automatic session-retention cleanup yet, and Workers and D1 free-plan call, CPU and query limits apply; maintenance runs in bounded batches, so consider a queue or a paid plan for busier deployments. See [Platform notes](docs/platform-notes.md).
+D1 stores the group configuration, session snapshots, the content bank, spam blocklists and per-group message counts for the spam filter. The `admin_targets` table holds only each administrator's user ID, selected group ID and update time; a selection is ignored after 24 hours without a command, and cron maintenance prunes expired rows. Session payloads keep their own question and rules snapshots, so content updates never change in-flight verifications. There is no automatic session-retention cleanup yet, and Workers and D1 free-plan call, CPU and query limits apply; maintenance runs in bounded batches, so consider a queue or a paid plan for busier deployments. See [Platform notes](docs/platform-notes.md).
 
 ## Spam filter
 

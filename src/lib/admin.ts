@@ -28,6 +28,7 @@ import {
   parsePanelCallback,
 } from "./admin-panel.js";
 import { apiError } from "./api-error.js";
+import { COMMAND_LANGUAGES, MANAGER_COMMANDS, PRIVATE_COMMANDS, botCommands } from "./commands.js";
 import { detectLanguage, t } from "./i18n.js";
 import { DEFAULT_CONFIG, validateConfig, validateContentPack } from "./quiz.js";
 import {
@@ -62,6 +63,7 @@ type AdminApi = Pick<
   | "sendMessage"
   | "editMessageText"
   | "answerCallbackQuery"
+  | "setMyCommands"
   | "getMe"
   | "getChat"
   | "getChatMember"
@@ -228,12 +230,32 @@ export function createAdmin({
     };
   }
 
+  /**
+   * Show the management commands in this person's "/" menu while they manage a group, or the
+   * plain private menu when they stop. A display nicety, so a failure never blocks the request.
+   */
+  async function showCommands(userId: number, managing: boolean): Promise<void> {
+    const commands = managing ? MANAGER_COMMANDS : PRIVATE_COMMANDS;
+    try {
+      for (const { code, key } of COMMAND_LANGUAGES) {
+        await api.setMyCommands({
+          commands: botCommands(commands, key),
+          scope: { type: "chat", chat_id: userId },
+          ...(code ? { language_code: code } : {}),
+        });
+      }
+    } catch (error) {
+      console.warn("setMyCommands failed", apiError(error).code);
+    }
+  }
+
   /** Remember `chatId` as the user's group to manage, after proving they may manage it. */
   async function selectGroup(userId: number, chatId: number): Promise<Chat | null> {
     if ((await access(chatId, userId)).status !== "ok") return null;
     const chat = await groupInfo(chatId);
     if (!chat) return null;
     await repository.setAdminTarget(userId, chatId, now());
+    await showCommands(userId, true);
     return chat;
   }
 
@@ -455,6 +477,7 @@ export function createAdmin({
     }
     if (args.toLowerCase() === "clear") {
       await repository.clearAdminTarget(userId);
+      await showCommands(userId, false);
       await send(api, sourceChatId, language, "groupsCleared", undefined, {
         remove_keyboard: true,
       });

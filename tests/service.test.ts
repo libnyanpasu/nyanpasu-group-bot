@@ -174,6 +174,11 @@ function setup({
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (group_id, user_id)
     );
+    CREATE TABLE admin_targets (
+      user_id INTEGER PRIMARY KEY,
+      group_id INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
   const database = drizzle(
     async (query: string, params: SQLInputValue[], method: "run" | "all" | "values" | "get") => {
@@ -834,6 +839,23 @@ describe("join verification service", () => {
       expect(session.status).toBe("declined");
       expect(session.blockedUntil).toBe(ctxTime(initialNow, config));
       expect(ctx.calls.filter((call) => call.method === "declineChatJoinRequest")).toHaveLength(1);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("prunes group selections that sat unused for more than a day", async () => {
+    const ctx = setup();
+    try {
+      const day = 24 * 60 * 60 * 1000;
+      await ctx.repository.setAdminTarget(1, -100, initialNow - day - 1);
+      await ctx.repository.setAdminTarget(2, -200, initialNow - day);
+
+      await ctx.service.maintenance();
+
+      // The oldest-allowed selection survives; reading already ignored anything older.
+      expect(await ctx.repository.getAdminTarget(1, 0)).toBeNull();
+      expect(await ctx.repository.getAdminTarget(2, 0)).toBe(-200);
     } finally {
       ctx.close();
     }

@@ -210,6 +210,11 @@ export interface BotApi {
     input: MessageBody & { chat_id: number; message_id: number },
   ): Promise<Message | boolean>;
   answerCallbackQuery(input: { callback_query_id: string; text?: string }): Promise<boolean>;
+  setMyCommands(input: {
+    commands: { command: string; description: string }[];
+    scope: { type: "chat"; chat_id: number };
+    language_code?: "zh";
+  }): Promise<boolean>;
   approveChatJoinRequest(input: { chat_id: number; user_id: number }): Promise<boolean>;
   declineChatJoinRequest(input: { chat_id: number; user_id: number }): Promise<boolean>;
   answerChatJoinRequestQuery(input: {

@@ -5,6 +5,7 @@ export type FakeCall =
   | { method: "sendMessage"; args: Parameters<BotApi["sendMessage"]>[0] }
   | { method: "editMessageText"; args: Parameters<BotApi["editMessageText"]>[0] }
   | { method: "answerCallbackQuery"; args: Parameters<BotApi["answerCallbackQuery"]>[0] }
+  | { method: "setMyCommands"; args: Parameters<BotApi["setMyCommands"]>[0] }
   | { method: "approveChatJoinRequest"; args: Parameters<BotApi["approveChatJoinRequest"]>[0] }
   | { method: "declineChatJoinRequest"; args: Parameters<BotApi["declineChatJoinRequest"]>[0] }
   | {
@@ -42,6 +43,10 @@ export function createFakeBotApi(overrides: Partial<BotApi> = {}): FakeBotApi {
     },
     async answerCallbackQuery(args) {
       calls.push({ method: "answerCallbackQuery", args });
+      return true;
+    },
+    async setMyCommands(args) {
+      calls.push({ method: "setMyCommands", args });
       return true;
     },
     async approveChatJoinRequest(args) {

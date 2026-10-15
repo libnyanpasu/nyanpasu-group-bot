@@ -93,6 +93,7 @@ export function toBotApi(api: Api, token: string): BotApi {
     sendMessage: (input) => call(() => raw.sendMessage(input)),
     editMessageText: (input) => call(() => raw.editMessageText(input)),
     answerCallbackQuery: (input) => call(() => raw.answerCallbackQuery(input)),
+    setMyCommands: (input) => call(() => raw.setMyCommands(input)),
     approveChatJoinRequest: (input) => call(() => raw.approveChatJoinRequest(input)),
     declineChatJoinRequest: (input) => call(() => raw.declineChatJoinRequest(input)),
     answerChatJoinRequestQuery: (input) => call(() => raw.answerChatJoinRequestQuery(input)),
