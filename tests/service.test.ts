@@ -706,6 +706,48 @@ describe("join verification service", () => {
     }
   });
 
+  it("has nothing to say to /start without a session, so another greeting can follow", async () => {
+    const ctx = setup();
+    try {
+      await expect(ctx.service.start(privateMessage(42))).resolves.toBe(false);
+      expect(ctx.calls).toEqual([]);
+      await expect(
+        ctx.service.start({
+          message_id: 1,
+          chat: { id: -100, type: "supergroup" },
+          from: { id: 42 },
+        }),
+      ).resolves.toBe(false);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("tells a recently approved applicant on /start, but only for a day", async () => {
+    const ctx = setup();
+    try {
+      await ctx.repository.saveConfig(-100, config);
+      await ctx.service.join(joinRequest(), update(1));
+      await sendAnswer({ ...ctx, userId: 42, key: "-100:42" });
+      expect((await requiredSession(ctx.repository, "-100:42")).status).toBe("approved");
+      const sent = () => ctx.calls.filter((call) => call.method === "sendMessage").length;
+
+      const before = sent();
+      ctx.setNow(initialNow + 60 * 60 * 1000);
+      await expect(ctx.service.start(privateMessage(42))).resolves.toBe(true);
+      expect(sent()).toBe(before + 1);
+      const reply = requiredCall(ctx.calls.filter((call) => call.method === "sendMessage").at(-1));
+      expect(reply.args.text).toContain("Group -100");
+      expect(reply.args.text).toContain("已通过");
+
+      ctx.setNow(initialNow + 25 * 60 * 60 * 1000);
+      await expect(ctx.service.start(privateMessage(42))).resolves.toBe(false);
+      expect(sent()).toBe(before + 1);
+    } finally {
+      ctx.close();
+    }
+  });
+
   it("queues Bot API join-query requests without creating a quiz session", async () => {
     const ctx = setup();
     try {

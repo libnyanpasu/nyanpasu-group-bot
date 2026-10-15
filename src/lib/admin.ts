@@ -28,7 +28,7 @@ import {
   parsePanelCallback,
 } from "./admin-panel.js";
 import { apiError } from "./api-error.js";
-import { t } from "./i18n.js";
+import { detectLanguage, t } from "./i18n.js";
 import { DEFAULT_CONFIG, validateConfig, validateContentPack } from "./quiz.js";
 import {
   DEFAULT_BLOCKLIST_ID,
@@ -517,6 +517,32 @@ export function createAdmin({
     await sendPanel(message.chat.id, chat);
   }
 
+  /**
+   * The private-chat greeting for someone with nothing in progress: the group they are
+   * managing when they have a live selection, otherwise how to join and how to manage.
+   */
+  async function welcome(message: Message): Promise<void> {
+    const userId = message.from?.id;
+    if (message.chat.type !== "private" || userId == null) return;
+    const language = detectLanguage(message.from?.language_code);
+    // A lookup only; greeting someone does not count as using the selection.
+    const saved = await repository.getAdminTarget(userId, now() - ADMIN_TARGET_TTL_MS);
+    if (saved !== null && (await access(saved, userId)).status === "ok") {
+      const chat = await groupInfo(saved);
+      if (chat) {
+        await api.sendMessage({
+          chat_id: message.chat.id,
+          text: t(language, "startManaging", { title: title(chat) }),
+        });
+        return;
+      }
+    }
+    await api.sendMessage({
+      chat_id: message.chat.id,
+      text: `${t(language, "startHelp")}\n\n${t(language, "startAdmin")}`,
+    });
+  }
+
   /** `/start s<n>` or `g<n>`: a deep link from a group's "Manage in private chat" button. */
   async function open(message: Message, ref: string): Promise<boolean> {
     const groupId = decodeGroupRef(ref);
@@ -848,5 +874,5 @@ export function createAdmin({
     }
   }
 
-  return { handle, chatShared, open, callback };
+  return { handle, chatShared, open, callback, welcome };
 }

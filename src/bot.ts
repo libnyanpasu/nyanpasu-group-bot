@@ -43,13 +43,15 @@ export function createBot(env: Bindings): Bot {
   for (const name of ADMIN_COMMANDS) {
     bot.command(name, (ctx) => admin.handle(ctx.msg, { name, args: ctx.match.trim() }));
   }
-  // A group's "Manage in private chat" button arrives as `/start s<n>`.
+  // `/start` follows the user's progress: a group deep link, then an applicant's verification step
+  // or recent approval, then the group they are managing, then the general greeting.
   bot.command("start", async (ctx) => {
     const payload = ctx.match.trim();
     if (payload && (await admin.open(ctx.msg, payload))) return;
-    await service.start(ctx.msg);
+    if (await service.start(ctx.msg)) return;
+    await admin.welcome(ctx.msg);
   });
-  bot.command("help", (ctx) => service.start(ctx.msg));
+  bot.command("help", (ctx) => admin.welcome(ctx.msg));
 
   return bot;
 }

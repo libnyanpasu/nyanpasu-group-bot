@@ -31,6 +31,8 @@ import {
 } from "./spam.js";
 
 const pending = (s: Session) => ["approve_pending", "decline_pending"].includes(s.status);
+/** How long after a request an approval still counts as "recent" for /start. */
+const RECENT_APPROVAL_MS = 24 * 60 * 60 * 1000;
 const CLEANUP_LEASE_MS = 60_000;
 const DEFAULT_RETRY_MS = 5_000;
 // Keep each scheduled invocation small; at a one-minute cadence, the ideal drain is 3 items/minute.
@@ -562,8 +564,9 @@ export function createService({
     return true;
   }
 
-  async function start(message: Message) {
-    if (message.chat?.type !== "private" || !message.from) return;
+  /** Show the applicant's current verification step; false when there is nothing to show. */
+  async function start(message: Message): Promise<boolean> {
+    if (message.chat?.type !== "private" || !message.from) return false;
     const sessions = await repository.listSessionsForUser(message.from.id);
     const relevant = sessions.filter(
       (s) =>
@@ -573,16 +576,24 @@ export function createService({
         s.blockedUntil > now(),
     );
     if (!relevant.length) {
+      // Sessions are newest first, so this is the most recent approval.
+      const approved = sessions.find(
+        (s) => s.status === "approved" && now() - s.requestDate * 1000 <= RECENT_APPROVAL_MS,
+      );
+      if (!approved) return false;
       await api.sendMessage({
         chat_id: message.chat.id,
-        text: t(detectLanguage(message.from.language_code), "startHelp"),
+        text: t(detectLanguage(message.from.language_code), "startRecentlyApproved", {
+          title: approved.title,
+        }),
       });
-      return;
+      return true;
     }
     for (const item of relevant) {
       const session = await settle(await expire(item));
       await display(session, message.chat.id);
     }
+    return true;
   }
   return { join, callback, start, joinNotice, moderate, maintenance, maintainSession };
 }

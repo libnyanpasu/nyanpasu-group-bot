@@ -1065,4 +1065,53 @@ describe("createAdmin", () => {
       expect(text).toContain("delete-messages permission");
     });
   });
+
+  describe("welcome", () => {
+    const lastText = (api: ReturnType<typeof setup>["api"]) =>
+      api.sendMessage.mock.lastCall![0].text;
+
+    it("explains joining and managing to someone with nothing selected", async () => {
+      const { api, admin, repository } = setup();
+
+      await admin.welcome(privateMessage("/start"));
+
+      expect(lastText(api)).toContain("request to join the group");
+      expect(lastText(api)).toContain("/verify_groups");
+      expect(lastText(api)).not.toContain("correct");
+      expect(repository.setAdminTarget).not.toHaveBeenCalled();
+    });
+
+    it("names the group being managed and keeps the 24 hour window untouched", async () => {
+      const { api, admin, repository } = setup({ selected: { groupId: GROUP_ID } });
+
+      await admin.welcome(privateMessage("/start"));
+
+      expect(lastText(api)).toContain("You are managing Test group.");
+      expect(repository.setAdminTarget).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the general greeting when the selection is expired or no longer valid", async () => {
+      const expired = setup({ selected: { groupId: GROUP_ID, at: NOW - DAY - 1 } });
+      await expired.admin.welcome(privateMessage("/start"));
+      expect(lastText(expired.api)).toContain("/verify_groups");
+      expect(lastText(expired.api)).not.toContain("You are managing");
+
+      const demoted = setup({ selected: { groupId: GROUP_ID }, member: { status: "member" } });
+      await demoted.admin.welcome(privateMessage("/start"));
+      expect(lastText(demoted.api)).not.toContain("You are managing");
+
+      const gone = setup({ selected: { groupId: GROUP_ID } });
+      gone.api.getChatMember.mockRejectedValue(Object.assign(new Error("x"), { code: 400 }));
+      await gone.admin.welcome(privateMessage("/start"));
+      expect(lastText(gone.api)).not.toContain("You are managing");
+    });
+
+    it("stays silent in groups", async () => {
+      const { api, admin } = setup();
+
+      await admin.welcome(groupMessage("/help"));
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
+    });
+  });
 });
