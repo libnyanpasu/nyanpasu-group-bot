@@ -59,7 +59,11 @@ function runtime({
   overrides?: Partial<Runtime["service"]>;
 } = {}): Runtime {
   return {
-    admin: { handle: vi.fn(async (_message: Message, _command: AdminCommand) => {}) },
+    admin: {
+      handle: vi.fn(async (_message: Message, _command: AdminCommand) => {}),
+      chatShared: vi.fn(async (_message: Message) => {}),
+      open: vi.fn(async (_message: Message, _payload: string) => false),
+    },
     service: {
       start: vi.fn(async (_message: Message) => {}),
       callback: vi.fn(async () => {}),
@@ -145,6 +149,8 @@ describe("Cloudflare Worker webhook", () => {
         (fn) => fn !== instance.service.maintenance && fn !== instance.service.maintainSession,
       ),
       instance.admin.handle,
+      instance.admin.chatShared,
+      instance.admin.open,
     ]) {
       expect(handler).not.toHaveBeenCalled();
     }
@@ -184,6 +190,52 @@ describe("Cloudflare Worker webhook", () => {
     await send({ update_id: 4, message: textMessage("hello /start") });
 
     expect(instance.service.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens a group from a /start deep link and skips the start flow when it handled it", async () => {
+    const instance = runtime();
+    instance.admin.open = vi.fn(async () => true);
+    runtimeMock.createRuntime.mockReturnValue(instance);
+
+    await send({ update_id: 30, message: textMessage("/start s1234567890") });
+
+    expect(instance.admin.open).toHaveBeenCalledWith(
+      expect.objectContaining({ message_id: 5 }),
+      "s1234567890",
+    );
+    expect(instance.service.start).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the start flow for payloads that are not group links", async () => {
+    const instance = runtime();
+    runtimeMock.createRuntime.mockReturnValue(instance);
+
+    await send({ update_id: 31, message: textMessage("/start hello") });
+    await send({ update_id: 32, message: textMessage("/start") });
+
+    expect(instance.admin.open).toHaveBeenCalledOnce();
+    expect(instance.admin.open).toHaveBeenCalledWith(expect.anything(), "hello");
+    expect(instance.service.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("routes a picked group to the admin handler instead of the spam filter or commands", async () => {
+    const instance = runtime();
+    runtimeMock.createRuntime.mockReturnValue(instance);
+
+    const response = await send({
+      update_id: 33,
+      message: textMessage("", {
+        text: undefined,
+        chat_shared: { request_id: 1, chat_id: -1001234567890 },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(instance.admin.chatShared).toHaveBeenCalledWith(
+      expect.objectContaining({ chat_shared: { request_id: 1, chat_id: -1001234567890 } }),
+    );
+    expect(instance.admin.handle).not.toHaveBeenCalled();
+    expect(instance.service.start).not.toHaveBeenCalled();
   });
 
   it("routes admin commands with their arguments and does not start", async () => {

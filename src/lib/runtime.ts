@@ -37,6 +37,6 @@ export function createRuntime(
   const spamDefaults = spamDefaultsFromEnv(env);
   return {
     service: createService({ api, repository, defaultDeleteJoinMessages, spamDefaults }),
-    admin: { handle: createAdmin({ api, repository, defaultDeleteJoinMessages, spamDefaults }) },
+    admin: createAdmin({ api, repository, defaultDeleteJoinMessages, spamDefaults }),
   };
 }

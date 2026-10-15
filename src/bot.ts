@@ -36,10 +36,18 @@ export function createBot(env: Bindings): Bot {
   bot.on("message", async (ctx, next) => {
     if (!(await service.moderate(ctx.msg))) await next();
   });
+  // The group chosen with the `request_chat` button of /verify_groups.
+  bot.on("message:chat_shared", (ctx) => admin.chatShared(ctx.msg));
   for (const name of ADMIN_COMMANDS) {
     bot.command(name, (ctx) => admin.handle(ctx.msg, { name, args: ctx.match.trim() }));
   }
-  bot.command(["start", "help"], (ctx) => service.start(ctx.msg));
+  // A group's "Manage in private chat" button arrives as `/start s<n>`.
+  bot.command("start", async (ctx) => {
+    const payload = ctx.match.trim();
+    if (payload && (await admin.open(ctx.msg, payload))) return;
+    await service.start(ctx.msg);
+  });
+  bot.command("help", (ctx) => service.start(ctx.msg));
 
   return bot;
 }

@@ -19,6 +19,7 @@ import type {
   Message,
 } from "../types.js";
 import { t, detectLanguage } from "./i18n.js";
+import { ADMIN_TARGET_TTL_MS } from "./admin-target.js";
 import { nextDueAt } from "./schedule.js";
 import {
   type BlocklistMatcher,
@@ -359,6 +360,12 @@ export function createService({
       } catch (caught) {
         console.warn("Maintenance item failed", apiError(caught).code);
       }
+    }
+    // Expired group selections are already ignored on read; this only keeps the table small.
+    try {
+      await repository.pruneAdminTargets(at - ADMIN_TARGET_TTL_MS);
+    } catch {
+      console.warn("Admin target cleanup failed");
     }
   }
 

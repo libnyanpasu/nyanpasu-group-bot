@@ -1,6 +1,15 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
-import { blocklists, groups, members, packs, questions, rules, sessions } from "../schema.js";
+import {
+  adminTargets,
+  blocklists,
+  groups,
+  members,
+  packs,
+  questions,
+  rules,
+  sessions,
+} from "../schema.js";
 import type { Config, ContentPack, Question, Repository, Session } from "../types.js";
 
 const USER_SESSION_LIMIT = 20;
@@ -143,6 +152,32 @@ export function createRepository<
         .onConflictDoUpdate({ target: groups.groupId, set: { payload: stored } })
         .run();
       return stored;
+    },
+
+    async getAdminTarget(userId, notBefore) {
+      const [row] = await database
+        .select({ groupId: adminTargets.groupId })
+        .from(adminTargets)
+        .where(and(eq(adminTargets.userId, userId), gte(adminTargets.updatedAt, notBefore)))
+        .limit(1)
+        .all();
+      return row?.groupId ?? null;
+    },
+
+    async setAdminTarget(userId, groupId, at) {
+      await database
+        .insert(adminTargets)
+        .values({ userId, groupId, updatedAt: at })
+        .onConflictDoUpdate({ target: adminTargets.userId, set: { groupId, updatedAt: at } })
+        .run();
+    },
+
+    async clearAdminTarget(userId) {
+      await database.delete(adminTargets).where(eq(adminTargets.userId, userId)).run();
+    },
+
+    async pruneAdminTargets(before) {
+      await database.delete(adminTargets).where(lt(adminTargets.updatedAt, before)).run();
     },
 
     async getContentPack(id) {

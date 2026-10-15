@@ -389,9 +389,12 @@ describe("join verification service", () => {
         testContent.rules.en,
       );
       expect(
-        ctx.calls
-          .filter((call) => call.method === "sendMessage")[0]
-          .args.reply_markup!.inline_keyboard.flat()
+        (
+          ctx.calls.filter((call) => call.method === "sendMessage")[0].args.reply_markup as {
+            inline_keyboard: { text: string }[][];
+          }
+        ).inline_keyboard
+          .flat()
           .some((button) => button.text.includes("Agree to rules")),
       ).toBe(true);
     } finally {

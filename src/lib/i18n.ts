@@ -11,7 +11,14 @@ export const messages = {
     staleButton: "This action is no longer current.",
     recorded: "Your response has been recorded.",
     startHelp:
-      "First request to join the group using its invite link. Complete the private verification before the deadline. Send /start to resume without resetting your progress.",
+      "To join, request to join the group through its invite link, then complete the private verification before the deadline. Send /start to resume without resetting your progress.",
+    startAdmin:
+      "To manage a group, add this bot as an administrator with permission to invite users. Then send /verify_groups to choose the group and /verify_config to open the settings panel.",
+    startManaging:
+      "You are managing {title}. Send /verify_config for the settings panel, /verify_status for its status, or /verify_groups to switch group.",
+    startNotAdmin:
+      "That group link is not valid for you: you are not an administrator there, or the bot is not in the group.",
+    startRecentlyApproved: "{title}: your join request was approved recently. Welcome!",
     question:
       "{title}\n\nGroup rules (version {version}):\n{rules}\n\nVerification question (candidate {current}/{total})\n{prompt}\n{choices}\n\nAnswer one question correctly to join. Choosing an answer accepts these rules; a wrong answer declines your request. You may skip up to two questions; skipping does not record agreement.\nFinish before {deadline} (UTC).",
     choice: "{letter}. {option}",
@@ -29,7 +36,13 @@ export const messages = {
     staleButton: "此操作已不是当前步骤。",
     recorded: "操作已记录。",
     startHelp:
-      "请先通过群组邀请链接申请入群，再在截止时间前完成私聊验证。发送 /start 可恢复验证，进度和时限不会重置。",
+      "请先通过群组邀请链接提交入群申请，再在截止时间前完成私聊验证。发送 /start 可恢复验证，进度和时限不会重置。",
+    startAdmin:
+      "如需管理群组，请先将本机器人设为群管理员并授予邀请成员权限，然后发送 /verify_groups 选择群组，再发送 /verify_config 打开设置面板。",
+    startManaging:
+      "你正在管理 {title}。发送 /verify_config 打开设置面板，发送 /verify_status 查看状态，或发送 /verify_groups 切换群组。",
+    startNotAdmin: "该群组链接对你无效：你不是该群组的管理员，或机器人不在该群组中。",
+    startRecentlyApproved: "{title}：你的入群申请近期已通过。欢迎加入！",
     question:
       "{title}\n\n群规（版本 {version}）：\n{rules}\n\n验证题（候选 {current}/{total}）\n{prompt}\n{choices}\n\n答对一题即可入群。点击答案即同意以上群规，答错将拒绝申请；最多换题两次，换题不代表同意。\n请在 {deadline}（UTC）前完成。",
     choice: "{letter}. {option}",
