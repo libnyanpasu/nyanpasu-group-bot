@@ -1,5 +1,6 @@
 import { Bot } from "grammy";
 import type { UserFromGetMe } from "grammy/types";
+import { ADMIN_COMMANDS } from "./lib/admin.js";
 import { createRuntime } from "./lib/runtime.js";
 import { API_CLIENT_OPTIONS, configureApi } from "./lib/telegram.js";
 import type { Bindings } from "./types.js";
@@ -35,9 +36,9 @@ export function createBot(env: Bindings): Bot {
   bot.on("message", async (ctx, next) => {
     if (!(await service.moderate(ctx.msg))) await next();
   });
-  bot.on("message", async (ctx, next) => {
-    if (!(await admin.handle(ctx.msg))) await next();
-  });
+  for (const name of ADMIN_COMMANDS) {
+    bot.command(name, (ctx) => admin.handle(ctx.msg, { name, args: ctx.match.trim() }));
+  }
   bot.command(["start", "help"], (ctx) => service.start(ctx.msg));
 
   return bot;

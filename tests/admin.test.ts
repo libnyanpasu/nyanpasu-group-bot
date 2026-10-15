@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BotApi, Config, ContentPack, Member, Message, Repository } from "../src/types.js";
 
-import { createAdmin } from "../src/lib/admin.ts";
+import { ADMIN_COMMANDS, createAdmin, type AdminCommand } from "../src/lib/admin.ts";
 import { DEFAULT_CONFIG } from "../src/lib/quiz.ts";
 import type { SpamSettings } from "../src/lib/spam.ts";
 
@@ -116,16 +116,23 @@ function setup({
       delete: [],
     }),
   } satisfies AdminRepository;
-  const handle = createAdmin({ api, repository, defaultDeleteJoinMessages, spamDefaults });
+  const admin = createAdmin({ api, repository, defaultDeleteJoinMessages, spamDefaults });
+  /** Mimic grammY's command routing (covered in worker.test.ts): true when a command ran. */
+  const handle = async (message: Message): Promise<boolean> => {
+    const match = /^\/([a-z_]+)(?:\s+([\s\S]*))?$/.exec(message.text ?? "");
+    const name = ADMIN_COMMANDS.find((command) => command === match?.[1]);
+    if (!match || !name) return false;
+    await admin(message, { name, args: match[2]?.trim() ?? "" } satisfies AdminCommand);
+    return true;
+  };
   return { api, repository, handle };
 }
 
 describe("createAdmin", () => {
-  it("ignores non-admin commands and commands addressed to another bot", async () => {
+  it("ignores messages that are not admin commands", async () => {
     const { api, handle } = setup();
 
     await expect(handle(groupMessage("hello"))).resolves.toBe(false);
-    await expect(handle(groupMessage("/verify_help@other_bot"))).resolves.toBe(false);
     expect(api.getChatMember).not.toHaveBeenCalled();
   });
 

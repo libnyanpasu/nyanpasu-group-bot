@@ -18,20 +18,21 @@ import {
   validateBlocklist,
 } from "./spam.js";
 
-const COMMANDS = new Set([
+/** Commands the admin module handles; grammY's `bot.command` routes them and parses arguments. */
+export const ADMIN_COMMANDS = [
   "verify_help",
   "verify_status",
   "verify_enable",
   "verify_disable",
   "verify_config",
   "verify_invite",
-]);
+] as const;
 const CONFIG_KEYS = new Set(["timeoutSeconds", "cooldownSeconds", "spamFirstMessages"]);
 const SPAM_KEYS = ["spamMode", "spamFirstMessages", "spamBan", "spamCas"] as const;
 
-interface ParsedCommand {
-  name: string;
-  addressedTo?: string;
+/** A routed admin command: its name without the slash and the trimmed text after it. */
+export interface AdminCommand {
+  name: (typeof ADMIN_COMMANDS)[number];
   args: string;
 }
 
@@ -46,13 +47,6 @@ interface AdminOptions {
   defaultDeleteJoinMessages?: boolean;
   /** Spam filter settings for groups that have not set their own. */
   spamDefaults?: SpamSettings;
-}
-
-function commandFrom(text?: string): ParsedCommand | null {
-  if (typeof text !== "string") return null;
-  const match = /^\/(verify_[a-z]+)(?:@([A-Za-z0-9_]+))?(?:\s+([\s\S]*))?$/.exec(text);
-  if (!match || !COMMANDS.has(match[1])) return null;
-  return { name: match[1], addressedTo: match[2], args: match[3]?.trim() ?? "" };
 }
 
 function userLanguage(user: User | undefined, fallback: Language): Language {
@@ -145,47 +139,39 @@ export function createAdmin({
     return missing.map((key) => adminMessage(language, key));
   }
 
-  return async function handle(message: Message): Promise<boolean> {
-    const command = commandFrom(message.text);
-    if (!command) return false;
-
-    if (command.addressedTo) {
-      const me = await api.getMe();
-      if (command.addressedTo.toLowerCase() !== me.username?.toLowerCase()) return false;
-    }
-
+  return async function handle(message: Message, command: AdminCommand): Promise<void> {
     const sourceChatId = message.chat.id;
     const privateChat = message.chat.type === "private";
     const groupChat = message.chat.type === "group" || message.chat.type === "supergroup";
     if (!privateChat && !groupChat) {
       await send(api, sourceChatId, userLanguage(message.from, "cn"), "unsupportedChat");
-      return true;
+      return;
     }
 
     if (privateChat && command.name === "verify_help" && !command.args) {
       await send(api, sourceChatId, userLanguage(message.from, "cn"), "privateHelp");
-      return true;
+      return;
     }
 
     if (groupChat && command.name === "verify_invite") {
       if (message.sender_chat) {
         await send(api, sourceChatId, "cn", "anonymousAdmin");
-        return true;
+        return;
       }
       const senderId = message.from?.id;
       if (senderId == null) {
         await send(api, sourceChatId, "cn", "senderUnknown");
-        return true;
+        return;
       }
       const groupMember = await api.getChatMember({ chat_id: sourceChatId, user_id: senderId });
       const storedConfig = await repository.getConfig(sourceChatId);
       const language = groupLanguage(storedConfig);
       if (!isAdmin(groupMember.status, groupMember.can_invite_users)) {
         await send(api, sourceChatId, language, "adminRequired");
-        return true;
+        return;
       }
       await send(api, sourceChatId, language, "invitePrivateOnly", { groupId: sourceChatId });
-      return true;
+      return;
     }
 
     let chatId = sourceChatId;
@@ -195,12 +181,12 @@ export function createAdmin({
       const targetId = target ? Number(target[1]) : Number.NaN;
       if (!target || !Number.isSafeInteger(targetId)) {
         await send(api, sourceChatId, userLanguage(message.from, "cn"), "targetRequired");
-        return true;
+        return;
       }
       const targetChat = await api.getChat({ chat_id: targetId });
       if (targetChat.type !== "group" && targetChat.type !== "supergroup") {
         await send(api, sourceChatId, userLanguage(message.from, "cn"), "targetNotGroup");
-        return true;
+        return;
       }
       chatId = targetId;
       args = target[2]?.trim() ?? "";
@@ -217,24 +203,24 @@ export function createAdmin({
 
     if (message.sender_chat) {
       await send(api, sourceChatId, responseLanguage, "anonymousAdmin");
-      return true;
+      return;
     }
 
     const senderId = message.from?.id;
     if (senderId == null) {
       await send(api, sourceChatId, responseLanguage, "senderUnknown");
-      return true;
+      return;
     }
 
     const member = await api.getChatMember({ chat_id: chatId, user_id: senderId });
     if (!isAdmin(member.status, member.can_invite_users)) {
       await send(api, sourceChatId, responseLanguage, "adminRequired");
-      return true;
+      return;
     }
 
     if (command.name === "verify_help") {
       await send(api, sourceChatId, responseLanguage, privateChat ? "privateHelp" : "help");
-      return true;
+      return;
     }
 
     if (command.name === "verify_status") {
@@ -263,37 +249,37 @@ export function createAdmin({
         config: configText(config, responseLanguage, defaultDeleteJoinMessages, spamDefaults),
       });
       await api.sendMessage({ chat_id: sourceChatId, text });
-      return true;
+      return;
     }
 
     if (command.name === "verify_enable") {
       const pack = await repository.getContentPack(config.contentId);
       if (!packIsUsable(pack)) {
         await send(api, sourceChatId, responseLanguage, "contentRequired");
-        return true;
+        return;
       }
       const configError = validateConfig(config);
       if (configError) {
         await send(api, sourceChatId, responseLanguage, "invalidConfig", { error: configError });
-        return true;
+        return;
       }
       const me = await api.getMe();
       const botMember = await api.getChatMember({ chat_id: chatId, user_id: me.id });
       if (!isAdmin(botMember.status, botMember.can_invite_users)) {
         await send(api, sourceChatId, responseLanguage, "botNeedsAdmin");
-        return true;
+        return;
       }
       config.enabled = true;
       await repository.saveConfig(chatId, config);
       await send(api, sourceChatId, responseLanguage, "enableSuccess");
-      return true;
+      return;
     }
 
     if (command.name === "verify_disable") {
       config.enabled = false;
       await repository.saveConfig(chatId, config);
       await send(api, sourceChatId, responseLanguage, "disableSuccess");
-      return true;
+      return;
     }
 
     if (command.name === "verify_config") {
@@ -302,7 +288,7 @@ export function createAdmin({
           chat_id: sourceChatId,
           text: configText(config, responseLanguage, defaultDeleteJoinMessages, spamDefaults),
         });
-        return true;
+        return;
       }
       const updates: Partial<Config> = {};
       for (const token of args.split(/\s+/)) {
@@ -310,7 +296,7 @@ export function createAdmin({
         if (key === "language") {
           if ((rawValue !== "en" && rawValue !== "cn") || extra.length) {
             await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
-            return true;
+            return;
           }
           updates.language = rawValue;
           continue;
@@ -318,7 +304,7 @@ export function createAdmin({
         if (key === "deleteJoinMessages") {
           if ((rawValue !== "on" && rawValue !== "off" && rawValue !== "default") || extra.length) {
             await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
-            return true;
+            return;
           }
           updates.deleteJoinMessages = rawValue === "default" ? undefined : rawValue === "on";
           continue;
@@ -326,7 +312,7 @@ export function createAdmin({
         if (SPAM_KEYS.includes(key as (typeof SPAM_KEYS)[number]) && rawValue === "default") {
           if (extra.length) {
             await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
-            return true;
+            return;
           }
           updates[key as (typeof SPAM_KEYS)[number]] = undefined;
           continue;
@@ -334,7 +320,7 @@ export function createAdmin({
         if (key === "spamMode") {
           if ((rawValue !== "off" && rawValue !== "new" && rawValue !== "all") || extra.length) {
             await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
-            return true;
+            return;
           }
           updates.spamMode = rawValue;
           continue;
@@ -342,18 +328,18 @@ export function createAdmin({
         if (key === "spamBan" || key === "spamCas") {
           if ((rawValue !== "on" && rawValue !== "off") || extra.length) {
             await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
-            return true;
+            return;
           }
           updates[key] = rawValue === "on";
           continue;
         }
         if (!CONFIG_KEYS.has(key) || rawValue == null || rawValue === "" || extra.length) {
           await send(api, sourceChatId, responseLanguage, "argumentFormat", { token });
-          return true;
+          return;
         }
         if (!/^[0-9]+$/.test(rawValue)) {
           await send(api, sourceChatId, responseLanguage, "integerRequired", { key });
-          return true;
+          return;
         }
         (updates as Record<string, unknown>)[key] = Number(rawValue);
       }
@@ -364,7 +350,7 @@ export function createAdmin({
       const error = validateConfig(next);
       if (error) {
         await send(api, sourceChatId, responseLanguage, "invalidConfigUpdate", { error });
-        return true;
+        return;
       }
       await repository.saveConfig(chatId, next);
       const newLanguage = groupLanguage(next);
@@ -387,24 +373,24 @@ export function createAdmin({
           text += `\n${adminMessage(newLanguage, "botNeedsSpamPermissions", { permissions: missing.join(", ") })}`;
       }
       await api.sendMessage({ chat_id: sourceChatId, text });
-      return true;
+      return;
     }
 
     if (command.name === "verify_invite") {
       if (!privateChat) {
         await send(api, sourceChatId, responseLanguage, "invitePrivateOnly", { groupId: chatId });
-        return true;
+        return;
       }
       const pack = await repository.getContentPack(config.contentId);
       if (!config.enabled || !packIsUsable(pack)) {
         await send(api, sourceChatId, responseLanguage, "inviteNeedsEnabled");
-        return true;
+        return;
       }
       const me = await api.getMe();
       const botMember = await api.getChatMember({ chat_id: chatId, user_id: me.id });
       if (!isAdmin(botMember.status, botMember.can_invite_users)) {
         await send(api, sourceChatId, responseLanguage, "botNeedsAdmin");
-        return true;
+        return;
       }
       const invite = await api.createChatInviteLink({
         chat_id: chatId,
@@ -414,9 +400,7 @@ export function createAdmin({
       await send(api, sourceChatId, responseLanguage, "inviteCreated", {
         inviteLink: invite.invite_link,
       });
-      return true;
+      return;
     }
-
-    return false;
   };
 }

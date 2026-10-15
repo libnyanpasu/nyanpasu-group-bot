@@ -1,5 +1,6 @@
 import type { UserFromGetMe } from "grammy/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AdminCommand } from "../src/lib/admin.js";
 import type { Bindings, Message } from "../src/types.js";
 import type { createRuntime } from "../src/lib/runtime.js";
 
@@ -53,14 +54,12 @@ function textMessage(text: string, extra: Record<string, unknown> = {}) {
 }
 
 function runtime({
-  adminResult = false,
   overrides = {},
 }: {
-  adminResult?: boolean;
   overrides?: Partial<Runtime["service"]>;
 } = {}): Runtime {
   return {
-    admin: { handle: vi.fn(async (_message: Message) => adminResult) },
+    admin: { handle: vi.fn(async (_message: Message, _command: AdminCommand) => {}) },
     service: {
       start: vi.fn(async (_message: Message) => {}),
       callback: vi.fn(async () => {}),
@@ -169,7 +168,7 @@ describe("Cloudflare Worker webhook", () => {
 
     expect(response.status).toBe(200);
     expect(instance.service.moderate).toHaveBeenCalledOnce();
-    expect(instance.admin.handle).toHaveBeenCalledOnce();
+    expect(instance.admin.handle).not.toHaveBeenCalled();
   });
 
   it("routes /start and /help to the start flow only when addressed to this bot", async () => {
@@ -184,14 +183,23 @@ describe("Cloudflare Worker webhook", () => {
     expect(instance.service.start).toHaveBeenCalledTimes(2);
   });
 
-  it("does not start when an admin command handled the message", async () => {
-    const instance = runtime({ adminResult: true });
+  it("routes admin commands with their arguments and does not start", async () => {
+    const instance = runtime();
     runtimeMock.createRuntime.mockReturnValue(instance);
 
-    const response = await send({ update_id: 5, message: textMessage("/start") });
+    const response = await send({
+      update_id: 5,
+      message: textMessage("/verify_config@verify_bot language=en  timeoutSeconds=60 "),
+    });
+    await send({ update_id: 6, message: textMessage("/verify_help@someone_else_bot") });
+    await send({ update_id: 7, message: textMessage("/verify_unknown") });
 
     expect(response.status).toBe(200);
     expect(instance.admin.handle).toHaveBeenCalledOnce();
+    expect(instance.admin.handle).toHaveBeenCalledWith(expect.objectContaining({ message_id: 5 }), {
+      name: "verify_config",
+      args: "language=en  timeoutSeconds=60",
+    } satisfies AdminCommand);
     expect(instance.service.start).not.toHaveBeenCalled();
   });
 
