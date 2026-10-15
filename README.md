@@ -12,6 +12,7 @@ A requester sees the full group rules and one bilingual multiple-choice question
 | `src/bot.ts`                    | Request-scoped grammY `Bot`: routes each update kind to the service            |
 | `src/lib/telegram.ts`           | grammY `Api` setup (timeouts, 429 retry) and the redacting `BotApi` adapter    |
 | `src/lib/service.ts`            | Verification flow, revision CAS, approval retries and scheduled cleanup        |
+| `src/timer.ts`                  | Per-session Durable Object timer that wakes maintenance at the due time        |
 | `src/lib/repository.ts`         | Drizzle queries and revision CAS                                               |
 | `src/schema.ts` / `migrations/` | D1 table definitions and SQL migrations                                        |
 | `private-content/`              | Local checkout of the private question repository (gitignored); synced with D1 |
@@ -110,7 +111,7 @@ No public group or group username is required. Admin commands are `/verify_help`
 
 The verification deadline runs from the join request; refreshing and `/start` do not extend it. Answers, rule acceptance and approval intentions are persisted through D1 revision CAS before any Telegram call. Short leases reduce duplicate concurrent work and `retry_after` drives retries, but no transaction spans D1 and the Bot API, so an ambiguous network outcome cannot guarantee exactly-once external effects.
 
-A per-minute Cron Trigger processes a small batch of expired sessions: it declines overdue requests, retries unfinished decisions and deletes verification messages after their original deadline. Scheduling, backlog and API retries can delay cleanup, and cron changes need time to propagate. The approval cooldown is a bot-side gate, not a Telegram group ban.
+A per-session Durable Object alarm declines overdue requests, retries unfinished decisions and deletes verification messages after their original deadline, close to the moment each is due. A per-minute Cron Trigger processes a small batch as a backstop for anything a timer missed. API retries can still delay cleanup, and cron changes need time to propagate. The approval cooldown is a bot-side gate, not a Telegram group ban.
 
 The webhook returns 2xx only after processing completes and returns a retryable error when processing fails. Telegram may still deliver updates more than once. Existing sessions keep their private question and rules snapshots across deployments, and `/verify_disable` only stops new sessions: existing verification and maintenance continue.
 

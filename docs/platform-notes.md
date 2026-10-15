@@ -24,7 +24,11 @@ All deadlines, leases and retry timestamps are milliseconds. Telegram `request.d
 
 ## Maintenance
 
-A per-minute Cron Trigger processes a small bounded batch. It transitions expired active sessions to decline intentions, retries due decisions and deletes the verification message after its original deadline. Cleanup uses its own lease and retry state. Work is isolated per session so one failed Telegram call does not stop all candidates. Pending work remains eligible for future invocations.
+Each verification session has a Durable Object timer (`SessionTimer`, SQLite-backed, addressed by the session key). Every committed D1 write that moves a session's next due time arms it (`withScheduling` in `src/lib/schedule.ts`), and its alarm calls `service.maintainSession(key)`: expire an unanswered session into a decline intention, retry a due decision, and delete the verification message after its original deadline. The alarm re-reads D1, does nothing before the session is due, and re-arms itself from the persisted retry, lease and cleanup times (never sooner than 15 s). Sessions are independent, so a backlog drains in parallel instead of at a fixed rate.
+
+D1 stays the source of truth and the timer holds only the session key. Arming happens after the D1 write and is best effort, and the timer is at-least-once, so the CAS and lease rules above still decide every outcome. A per-minute Cron Trigger remains the backstop: it processes a small bounded batch of anything overdue (sessions that predate the timers, or whose timer could not be armed), and its writes arm timers too. `nextDueAt` mirrors the conditions of `listActionableSessions`; a test keeps them in sync. Without the `SESSION_TIMER` binding (such as unit tests) cron alone runs maintenance.
+
+The first deploy applies the `SessionTimer` Durable Object migration (`migrations` in `wrangler.jsonc`, tag `v1`); this is separate from D1 migrations. Never rename or delete the class without a new migration tag.
 
 The deadline covers the whole verification and is not extended by refreshing or `/start`. Cleanup timing is approximate: cron scheduling, backlog, rate limits and deployment propagation can delay it. Cron configuration changes may take up to 15 minutes to propagate. Production live behavior still needs a dedicated Telegram test group.
 
@@ -43,6 +47,7 @@ Public CI does not clone the private content checkout; schema sync is skipped wh
 - [Drizzle with D1](https://orm.drizzle.team/docs/get-started/d1-new)
 - [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/)
 - [Workers Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
+- [Durable Object alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)
 - [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
 - [Telegram setWebhook](https://core.telegram.org/bots/api#setwebhook)
 - [Telegram ChatJoinRequest](https://core.telegram.org/bots/api#chatjoinrequest)

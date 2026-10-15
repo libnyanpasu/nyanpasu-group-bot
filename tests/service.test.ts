@@ -830,6 +830,53 @@ describe("join verification service", () => {
     }
   });
 
+  it("maintains one session for its timer only once it is due", async () => {
+    const ctx = setup();
+    try {
+      await ctx.repository.saveConfig(-100, config);
+      await ctx.service.join(joinRequest(), update(1));
+      const original = await requiredSession(ctx.repository, "-100:42");
+
+      await expect(ctx.service.maintainSession("-100:42")).resolves.toBe(original.expiresAt);
+      expect(ctx.calls.filter((call) => call.method === "declineChatJoinRequest")).toHaveLength(0);
+      await expect(ctx.service.maintainSession("-100:missing")).resolves.toBeNull();
+
+      ctx.setNow(original.expiresAt);
+      await expect(ctx.service.maintainSession("-100:42")).resolves.toBeNull();
+
+      const done = await requiredSession(ctx.repository, "-100:42");
+      expect(done.status).toBe("declined");
+      expect(done.messageDeletedAt).toBe(original.expiresAt);
+      expect(ctx.calls.filter((call) => call.method === "declineChatJoinRequest")).toHaveLength(1);
+      expect(ctx.calls.filter((call) => call.method === "deleteMessage")).toHaveLength(1);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("reports a failed decision's persisted retry time instead of throwing from the timer", async () => {
+    const ctx = setup({
+      apiOverrides: {
+        declineChatJoinRequest: async () => {
+          throw apiFailure("Too many requests", { code: 429, parameters: { retry_after: 7 } });
+        },
+      },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await ctx.repository.saveConfig(-100, config);
+      await ctx.service.join(joinRequest(), update(1));
+      const original = await requiredSession(ctx.repository, "-100:42");
+      ctx.setNow(original.expiresAt);
+
+      await expect(ctx.service.maintainSession("-100:42")).resolves.toBe(original.expiresAt + 7000);
+      expect((await requiredSession(ctx.repository, "-100:42")).status).toBe("decline_pending");
+    } finally {
+      warn.mockRestore();
+      ctx.close();
+    }
+  });
+
   it("retries an expired approval intent after its existing lease through maintenance", async () => {
     let attempts = 0;
     const ctx = setup({

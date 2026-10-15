@@ -67,6 +67,7 @@ function runtime({
       joinNotice: vi.fn(async (_message: Message) => {}),
       moderate: vi.fn(async (_message: Message, _options?: { edited?: boolean }) => false),
       maintenance: vi.fn(async () => {}),
+      maintainSession: vi.fn(async (_key: string) => null),
       ...overrides,
     },
   };
@@ -140,7 +141,9 @@ describe("Cloudflare Worker webhook", () => {
 
     expect(response.status).toBe(200);
     for (const handler of [
-      ...Object.values(instance.service).filter((fn) => fn !== instance.service.maintenance),
+      ...Object.values(instance.service).filter(
+        (fn) => fn !== instance.service.maintenance && fn !== instance.service.maintainSession,
+      ),
       instance.admin.handle,
     ]) {
       expect(handler).not.toHaveBeenCalled();

@@ -1,9 +1,11 @@
 import { Hono } from "hono";
-import { BotError, webhookCallback } from "grammy";
+import { BotError, GrammyError, webhookCallback } from "grammy";
 import type { Bindings } from "./types.js";
 import { createBot } from "./bot.js";
 import { apiError } from "./lib/api-error.js";
 import { createRuntime } from "./lib/runtime.js";
+
+export { SessionTimer } from "./timer.js";
 
 type HonoEnv = { Bindings: Bindings };
 
@@ -64,7 +66,8 @@ app.post("/webhook", async (context) => {
     // Webhook updates never reach `bot.catch`, and a BotError message embeds the cause's
     // text. Log only the update ID and the API error code, then rethrow so Telegram retries.
     const cause = error instanceof BotError ? error.error : error;
-    console.warn("Update processing failed", body.update_id, apiError(cause).code);
+    const code = cause instanceof GrammyError ? cause.error_code : apiError(cause).code;
+    console.warn("Update processing failed", body.update_id, code);
     throw error;
   }
 });

@@ -155,6 +155,8 @@ export interface Bindings {
   DB: D1Database;
   BOT_TOKEN: string;
   WEBHOOK_SECRET: string;
+  /** Per-session alarms; absent where Durable Objects are unavailable and cron alone runs maintenance. */
+  SESSION_TIMER?: DurableObjectNamespace<import("./timer.js").SessionTimer>;
   /** Default for groups without their own deleteJoinMessages setting: "true" or "false". */
   DELETE_JOIN_MESSAGES?: string;
   /** Spam filter defaults for groups without their own setting; see README › Spam filter. */
