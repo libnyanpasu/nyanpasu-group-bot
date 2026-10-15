@@ -1,12 +1,18 @@
 # Cloudflare Workers platform notes
 
-The bot runs as an ES module Worker bundled from strict TypeScript. Hono handles `GET /` and `POST /webhook`; Workers `scheduled` runs maintenance. There is no public frontend or static-asset binding. Runtime dependencies are Hono and Drizzle ORM; development packages and the private question checkout stay on the developer's machine.
+The bot runs as an ES module Worker bundled from strict TypeScript. Hono handles `GET /` and `POST /webhook`; Workers `scheduled` runs maintenance. There is no public frontend or static-asset binding. Runtime dependencies are Hono, grammY (with `@grammyjs/auto-retry`) and Drizzle ORM; development packages and the private question checkout stay on the developer's machine.
 
 ## Bindings and authentication
 
 `DB` is a D1 binding. `BOT_TOKEN` is the ordinary BotFather Bot API token, and `WEBHOOK_SECRET` is an independently generated URL-safe secret. Production values use Wrangler secrets; ignored `.dev.vars` supplies local values. Only the webhook registration helper needs local credentials.
 
-The webhook authenticates `X-Telegram-Bot-Api-Secret-Token` before parsing JSON or touching D1. It accepts only structurally valid supported update payloads, awaits dispatch before acknowledging success and returns a retryable failure when processing fails. Do not log full updates, private question content, API URLs containing tokens or unredacted fetch exceptions. Health responses expose no private content.
+The webhook authenticates `X-Telegram-Bot-Api-Secret-Token` before parsing JSON or touching D1. It then requires a JSON object with an integer `update_id` and hands the update to grammY's `webhookCallback`, which does not validate update structure further (the secret already authenticates the sender). grammY reads the body before it checks its own secret, so our check must stay first. Handlers are awaited before the 200; a failure or the 25 s timeout becomes a 500 so Telegram redelivers. Webhook updates never reach `bot.catch`: the Hono handler logs only the update ID and API error code, because a `BotError` message embeds its cause's text. Do not log full updates, private question content, API URLs containing tokens or unredacted exceptions. Health responses expose no private content.
+
+## grammY
+
+`src/bot.ts` builds a `Bot` per request and routes `chat_join_request`, `callback_query`, `edited_message`, join service messages, spam filtering, admin commands and `/start`/`/help` (`bot.command` only matches commands addressed to this bot). `getMe` is cached per isolate. Webhook replies are disabled (`canUseWebhookReply: () => false`) because decisions must be persisted around the real API result, and each request has a 15 s timeout.
+
+`@grammyjs/auto-retry` retries one 429 of at most 3 s; longer waits, 5xx and network failures are rethrown, and the service persists `retry_after` or keeps the decision pending in D1. `src/lib/telegram.ts` adapts the `Api` to the narrow `BotApi` port and converts every failure to a `TelegramApiError` without payloads, URLs or tokens. `@grammyjs/i18n` is not used: it needs Deno shims that do not bundle for Workers. The bundle grew from about 345 KiB to about 571 KiB (116 KiB gzip) when grammY was adopted. Health responses expose no private content.
 
 ## D1 and consistency
 
@@ -33,6 +39,7 @@ Public CI does not clone the private content checkout; schema sync is skipped wh
 ## Official references
 
 - [Hono on Workers](https://hono.dev/docs/getting-started/cloudflare-workers)
+- [grammY webhooks](https://grammy.dev/guide/deployment-types) and [auto-retry](https://grammy.dev/plugins/auto-retry)
 - [Drizzle with D1](https://orm.drizzle.team/docs/get-started/d1-new)
 - [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/)
 - [Workers Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
