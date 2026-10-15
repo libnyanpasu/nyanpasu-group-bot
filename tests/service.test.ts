@@ -174,6 +174,11 @@ function setup({
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (group_id, user_id)
     );
+    CREATE TABLE admin_targets (
+      user_id INTEGER PRIMARY KEY,
+      group_id INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
   const database = drizzle(
     async (query: string, params: SQLInputValue[], method: "run" | "all" | "values" | "get") => {
@@ -389,9 +394,12 @@ describe("join verification service", () => {
         testContent.rules.en,
       );
       expect(
-        ctx.calls
-          .filter((call) => call.method === "sendMessage")[0]
-          .args.reply_markup!.inline_keyboard.flat()
+        (
+          ctx.calls.filter((call) => call.method === "sendMessage")[0].args.reply_markup as {
+            inline_keyboard: { text: string }[][];
+          }
+        ).inline_keyboard
+          .flat()
           .some((button) => button.text.includes("Agree to rules")),
       ).toBe(true);
     } finally {
@@ -703,6 +711,48 @@ describe("join verification service", () => {
     }
   });
 
+  it("has nothing to say to /start without a session, so another greeting can follow", async () => {
+    const ctx = setup();
+    try {
+      await expect(ctx.service.start(privateMessage(42))).resolves.toBe(false);
+      expect(ctx.calls).toEqual([]);
+      await expect(
+        ctx.service.start({
+          message_id: 1,
+          chat: { id: -100, type: "supergroup" },
+          from: { id: 42 },
+        }),
+      ).resolves.toBe(false);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("tells a recently approved applicant on /start, but only for a day", async () => {
+    const ctx = setup();
+    try {
+      await ctx.repository.saveConfig(-100, config);
+      await ctx.service.join(joinRequest(), update(1));
+      await sendAnswer({ ...ctx, userId: 42, key: "-100:42" });
+      expect((await requiredSession(ctx.repository, "-100:42")).status).toBe("approved");
+      const sent = () => ctx.calls.filter((call) => call.method === "sendMessage").length;
+
+      const before = sent();
+      ctx.setNow(initialNow + 60 * 60 * 1000);
+      await expect(ctx.service.start(privateMessage(42))).resolves.toBe(true);
+      expect(sent()).toBe(before + 1);
+      const reply = requiredCall(ctx.calls.filter((call) => call.method === "sendMessage").at(-1));
+      expect(reply.args.text).toContain("Group -100");
+      expect(reply.args.text).toContain("已通过");
+
+      ctx.setNow(initialNow + 25 * 60 * 60 * 1000);
+      await expect(ctx.service.start(privateMessage(42))).resolves.toBe(false);
+      expect(sent()).toBe(before + 1);
+    } finally {
+      ctx.close();
+    }
+  });
+
   it("queues Bot API join-query requests without creating a quiz session", async () => {
     const ctx = setup();
     try {
@@ -789,6 +839,23 @@ describe("join verification service", () => {
       expect(session.status).toBe("declined");
       expect(session.blockedUntil).toBe(ctxTime(initialNow, config));
       expect(ctx.calls.filter((call) => call.method === "declineChatJoinRequest")).toHaveLength(1);
+    } finally {
+      ctx.close();
+    }
+  });
+
+  it("prunes group selections that sat unused for more than a day", async () => {
+    const ctx = setup();
+    try {
+      const day = 24 * 60 * 60 * 1000;
+      await ctx.repository.setAdminTarget(1, -100, initialNow - day - 1);
+      await ctx.repository.setAdminTarget(2, -200, initialNow - day);
+
+      await ctx.service.maintenance();
+
+      // The oldest-allowed selection survives; reading already ignored anything older.
+      expect(await ctx.repository.getAdminTarget(1, 0)).toBeNull();
+      expect(await ctx.repository.getAdminTarget(2, 0)).toBe(-200);
     } finally {
       ctx.close();
     }

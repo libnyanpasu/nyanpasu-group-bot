@@ -1,7 +1,7 @@
 import type { UserFromGetMe } from "grammy/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminCommand } from "../src/lib/admin.js";
-import type { Bindings, Message } from "../src/types.js";
+import type { Bindings, CallbackQuery, Message } from "../src/types.js";
 import type { createRuntime } from "../src/lib/runtime.js";
 
 const runtimeMock = vi.hoisted(() => ({ createRuntime: vi.fn() }));
@@ -59,9 +59,15 @@ function runtime({
   overrides?: Partial<Runtime["service"]>;
 } = {}): Runtime {
   return {
-    admin: { handle: vi.fn(async (_message: Message, _command: AdminCommand) => {}) },
+    admin: {
+      handle: vi.fn(async (_message: Message, _command: AdminCommand) => {}),
+      chatShared: vi.fn(async (_message: Message) => {}),
+      open: vi.fn(async (_message: Message, _payload: string) => false),
+      callback: vi.fn(async (_query: CallbackQuery) => {}),
+      welcome: vi.fn(async (_message: Message) => {}),
+    },
     service: {
-      start: vi.fn(async (_message: Message) => {}),
+      start: vi.fn(async (_message: Message) => true),
       callback: vi.fn(async () => {}),
       join: vi.fn(async () => {}),
       joinNotice: vi.fn(async (_message: Message) => {}),
@@ -145,6 +151,10 @@ describe("Cloudflare Worker webhook", () => {
         (fn) => fn !== instance.service.maintenance && fn !== instance.service.maintainSession,
       ),
       instance.admin.handle,
+      instance.admin.chatShared,
+      instance.admin.open,
+      instance.admin.callback,
+      instance.admin.welcome,
     ]) {
       expect(handler).not.toHaveBeenCalled();
     }
@@ -155,7 +165,9 @@ describe("Cloudflare Worker webhook", () => {
     const pending = new Promise<void>((resolve) => {
       gate.finish = resolve;
     });
-    const instance = runtime({ overrides: { start: vi.fn((_message: Message) => pending) } });
+    const instance = runtime({
+      overrides: { start: vi.fn(async (_message: Message) => (await pending, true)) },
+    });
     runtimeMock.createRuntime.mockReturnValue(instance);
 
     let responseReady = false;
@@ -174,7 +186,7 @@ describe("Cloudflare Worker webhook", () => {
     expect(instance.admin.handle).not.toHaveBeenCalled();
   });
 
-  it("routes /start and /help to the start flow only when addressed to this bot", async () => {
+  it("routes /start and /help only when addressed to this bot", async () => {
     const instance = runtime();
     runtimeMock.createRuntime.mockReturnValue(instance);
 
@@ -183,7 +195,67 @@ describe("Cloudflare Worker webhook", () => {
     await send({ update_id: 3, message: textMessage("/start@someone_else_bot") });
     await send({ update_id: 4, message: textMessage("hello /start") });
 
+    expect(instance.service.start).toHaveBeenCalledTimes(1);
+    expect(instance.admin.welcome).toHaveBeenCalledTimes(1);
+  });
+
+  it("greets from the admin side only when the applicant flow had nothing to show", async () => {
+    const instance = runtime();
+    runtimeMock.createRuntime.mockReturnValue(instance);
+
+    await send({ update_id: 50, message: textMessage("/start") });
+    expect(instance.service.start).toHaveBeenCalledOnce();
+    expect(instance.admin.welcome).not.toHaveBeenCalled();
+
+    instance.service.start = vi.fn(async (_message: Message) => false);
+    await send({ update_id: 51, message: textMessage("/start") });
+    expect(instance.admin.welcome).toHaveBeenCalledOnce();
+  });
+
+  it("opens a group from a /start deep link and skips the start flow when it handled it", async () => {
+    const instance = runtime();
+    instance.admin.open = vi.fn(async () => true);
+    runtimeMock.createRuntime.mockReturnValue(instance);
+
+    await send({ update_id: 30, message: textMessage("/start s1234567890") });
+
+    expect(instance.admin.open).toHaveBeenCalledWith(
+      expect.objectContaining({ message_id: 5 }),
+      "s1234567890",
+    );
+    expect(instance.service.start).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the start flow for payloads that are not group links", async () => {
+    const instance = runtime();
+    runtimeMock.createRuntime.mockReturnValue(instance);
+
+    await send({ update_id: 31, message: textMessage("/start hello") });
+    await send({ update_id: 32, message: textMessage("/start") });
+
+    expect(instance.admin.open).toHaveBeenCalledOnce();
+    expect(instance.admin.open).toHaveBeenCalledWith(expect.anything(), "hello");
     expect(instance.service.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("routes a picked group to the admin handler instead of the spam filter or commands", async () => {
+    const instance = runtime();
+    runtimeMock.createRuntime.mockReturnValue(instance);
+
+    const response = await send({
+      update_id: 33,
+      message: textMessage("", {
+        text: undefined,
+        chat_shared: { request_id: 1, chat_id: -1001234567890 },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(instance.admin.chatShared).toHaveBeenCalledWith(
+      expect.objectContaining({ chat_shared: { request_id: 1, chat_id: -1001234567890 } }),
+    );
+    expect(instance.admin.handle).not.toHaveBeenCalled();
+    expect(instance.service.start).not.toHaveBeenCalled();
   });
 
   it("routes admin commands with their arguments and does not start", async () => {
@@ -278,6 +350,25 @@ describe("Cloudflare Worker webhook", () => {
       { edited: true },
     );
     expect(instance.admin.handle).not.toHaveBeenCalled();
+  });
+
+  it("sends settings-panel buttons to the admin handler and quiz buttons to the service", async () => {
+    const instance = runtime();
+    runtimeMock.createRuntime.mockReturnValue(instance);
+    const from = { id: 7, is_bot: false, first_name: "A" };
+
+    await send({
+      update_id: 40,
+      callback_query: { id: "panel", from, data: "c:s1234567890:to" },
+    });
+    await send({ update_id: 41, callback_query: { id: "quiz", from, data: "q:nonce:0:1" } });
+
+    expect(instance.admin.callback).toHaveBeenCalledOnce();
+    expect(instance.admin.callback).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "panel", data: "c:s1234567890:to" }),
+    );
+    expect(instance.service.callback).toHaveBeenCalledOnce();
+    expect(instance.service.callback).toHaveBeenCalledWith(expect.objectContaining({ id: "quiz" }));
   });
 
   it("dispatches callback queries and join requests with their update ID", async () => {

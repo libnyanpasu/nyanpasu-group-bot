@@ -412,3 +412,99 @@ describe("repository", () => {
     }
   });
 });
+
+describe("admin targets", () => {
+  it("returns null when no group is saved", async () => {
+    const { database, close } = setup();
+    try {
+      const repository = createRepository(database);
+      expect(await repository.getAdminTarget(7, 0)).toBeNull();
+    } finally {
+      close();
+    }
+  });
+
+  it("returns the saved group while its timestamp is at or after notBefore", async () => {
+    const { database, close } = setup();
+    try {
+      const repository = createRepository(database);
+      await repository.setAdminTarget(7, -100, 1_000);
+      expect(await repository.getAdminTarget(7, 1_000)).toBe(-100);
+      expect(await repository.getAdminTarget(7, 500)).toBe(-100);
+    } finally {
+      close();
+    }
+  });
+
+  it("returns null once notBefore is later than the saved timestamp", async () => {
+    const { database, close } = setup();
+    try {
+      const repository = createRepository(database);
+      await repository.setAdminTarget(7, -100, 1_000);
+      expect(await repository.getAdminTarget(7, 1_001)).toBeNull();
+    } finally {
+      close();
+    }
+  });
+
+  it("overwrites the group and timestamp when the same user selects again", async () => {
+    const { database, close } = setup();
+    try {
+      const repository = createRepository(database);
+      await repository.setAdminTarget(7, -100, 1_000);
+      await repository.setAdminTarget(7, -200, 5_000);
+      expect(await repository.getAdminTarget(7, 0)).toBe(-200);
+      expect(await repository.getAdminTarget(7, 5_000)).toBe(-200);
+      expect(await repository.getAdminTarget(7, 5_001)).toBeNull();
+    } finally {
+      close();
+    }
+  });
+
+  it("keeps selections independent between users", async () => {
+    const { database, close } = setup();
+    try {
+      const repository = createRepository(database);
+      await repository.setAdminTarget(7, -100, 1);
+      await repository.setAdminTarget(8, -200, 2);
+      expect(await repository.getAdminTarget(7, 0)).toBe(-100);
+      expect(await repository.getAdminTarget(8, 0)).toBe(-200);
+
+      await repository.setAdminTarget(8, -300, 3);
+      expect(await repository.getAdminTarget(7, 0)).toBe(-100);
+      expect(await repository.getAdminTarget(8, 0)).toBe(-300);
+    } finally {
+      close();
+    }
+  });
+
+  it("clears only the given user's selection", async () => {
+    const { database, close } = setup();
+    try {
+      const repository = createRepository(database);
+      await repository.setAdminTarget(7, -100, 1);
+      await repository.setAdminTarget(8, -200, 2);
+      await repository.clearAdminTarget(7);
+      expect(await repository.getAdminTarget(7, 0)).toBeNull();
+      expect(await repository.getAdminTarget(8, 0)).toBe(-200);
+    } finally {
+      close();
+    }
+  });
+
+  it("prunes selections older than the cutoff and keeps newer ones", async () => {
+    const { database, close } = setup();
+    try {
+      const repository = createRepository(database);
+      await repository.setAdminTarget(1, -100, 100);
+      await repository.setAdminTarget(2, -200, 200);
+      await repository.setAdminTarget(3, -300, 300);
+      await repository.pruneAdminTargets(200);
+      expect(await repository.getAdminTarget(1, 0)).toBeNull();
+      expect(await repository.getAdminTarget(2, 0)).toBe(-200);
+      expect(await repository.getAdminTarget(3, 0)).toBe(-300);
+    } finally {
+      close();
+    }
+  });
+});

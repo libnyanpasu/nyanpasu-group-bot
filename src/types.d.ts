@@ -134,6 +134,8 @@ export interface Message {
   quote?: { text: string };
   forward_origin?: MessageOrigin;
   is_automatic_forward?: boolean;
+  /** Result of a `request_chat` keyboard button (private chats only). */
+  chat_shared?: { request_id: number; chat_id: number; title?: string };
 }
 export interface JoinRequest {
   chat: Chat;
@@ -165,9 +167,30 @@ export interface Bindings {
   SPAM_BAN?: string;
   SPAM_CAS?: string;
 }
+export type InlineKeyboardButton =
+  | { text: string; callback_data: string }
+  | { text: string; url: string };
+/** A reply-keyboard button that opens Telegram's native picker for groups the user manages. */
+export interface ChatPickerButton {
+  text: string;
+  request_chat: {
+    request_id: number;
+    chat_is_channel: false;
+    bot_is_member: true;
+    user_administrator_rights: { can_invite_users: true };
+  };
+}
 export interface MessageBody {
   text: string;
-  reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
+  reply_markup?: { inline_keyboard: InlineKeyboardButton[][] };
+}
+/** `sendMessage` also accepts reply keyboards, which `editMessageText` does not. */
+export interface SendBody {
+  text: string;
+  reply_markup?:
+    | { inline_keyboard: InlineKeyboardButton[][] }
+    | { keyboard: ChatPickerButton[][]; resize_keyboard: true; one_time_keyboard: true }
+    | { remove_keyboard: true };
 }
 export interface Member {
   status: string;
@@ -182,11 +205,16 @@ export interface BotApi {
     name?: string;
     creates_join_request: true;
   }): Promise<{ invite_link: string; creates_join_request?: boolean }>;
-  sendMessage(input: MessageBody & { chat_id: number }): Promise<Message>;
+  sendMessage(input: SendBody & { chat_id: number }): Promise<Message>;
   editMessageText(
     input: MessageBody & { chat_id: number; message_id: number },
   ): Promise<Message | boolean>;
   answerCallbackQuery(input: { callback_query_id: string; text?: string }): Promise<boolean>;
+  setMyCommands(input: {
+    commands: { command: string; description: string }[];
+    scope: { type: "chat"; chat_id: number };
+    language_code?: "zh";
+  }): Promise<boolean>;
   approveChatJoinRequest(input: { chat_id: number; user_id: number }): Promise<boolean>;
   declineChatJoinRequest(input: { chat_id: number; user_id: number }): Promise<boolean>;
   answerChatJoinRequestQuery(input: {
@@ -212,6 +240,12 @@ export interface Repository {
   getBlocklist(id: string): Promise<BlocklistDocument | null>;
   /** How many inspected messages a sender has posted in a group; 0 when unknown. */
   getMemberMessages(groupId: number, senderId: number): Promise<number>;
+  /** The group a user chose to manage, or null when none was chosen since `notBefore`. */
+  getAdminTarget(userId: number, notBefore: number): Promise<number | null>;
+  setAdminTarget(userId: number, groupId: number, at: number): Promise<void>;
+  clearAdminTarget(userId: number): Promise<void>;
+  /** Delete selections last used before `before`. */
+  pruneAdminTargets(before: number): Promise<void>;
   recordMemberMessage(groupId: number, senderId: number, at: number): Promise<void>;
   resetMembers(groupId: number, senderIds: number[]): Promise<void>;
 }

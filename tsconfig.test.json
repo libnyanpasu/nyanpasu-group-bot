@@ -6,5 +6,11 @@
     "checkJs": false,
     "allowImportingTsExtensions": true
   },
-  "include": ["tests/**/*.ts", "src/**/*.ts", "scripts/telegram-webhook.ts", "drizzle.config.ts"]
+  "include": [
+    "tests/**/*.ts",
+    "src/**/*.ts",
+    "scripts/telegram-webhook.ts",
+    "scripts/telegram-commands.ts",
+    "drizzle.config.ts"
+  ]
 }

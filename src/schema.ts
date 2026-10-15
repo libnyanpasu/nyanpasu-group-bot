@@ -56,6 +56,13 @@ export const groups = sqliteTable("groups", {
   payload: text("payload", { mode: "json" }).$type<Config>().notNull(),
 });
 
+/** The group an administrator last chose to manage from a private chat; expires by inactivity. */
+export const adminTargets = sqliteTable("admin_targets", {
+  userId: integer("user_id").primaryKey(),
+  groupId: integer("group_id").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
 export const sessions = sqliteTable(
   "sessions",
   {
@@ -93,4 +100,13 @@ export const sessions = sqliteTable(
   ],
 );
 
-export const schema = { groups, sessions, packs, rules, questions, blocklists, members };
+export const schema = {
+  groups,
+  sessions,
+  packs,
+  rules,
+  questions,
+  blocklists,
+  members,
+  adminTargets,
+};

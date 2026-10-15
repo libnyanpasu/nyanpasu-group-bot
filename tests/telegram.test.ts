@@ -53,6 +53,18 @@ describe("grammY-backed Telegram Bot API", () => {
     expect(calls.map((call) => call.method)).toEqual(["answerCallbackQuery", "deleteMessage"]);
   });
 
+  it("sets a per-chat command menu with the language it was given", async () => {
+    const { calls, port } = apiWith([{ ok: true, result: true }]);
+    const input = {
+      commands: [{ command: "start", description: "Start" }],
+      scope: { type: "chat" as const, chat_id: 9 },
+      language_code: "zh" as const,
+    };
+
+    await expect(port.setMyCommands(input)).resolves.toBe(true);
+    expect(calls).toEqual([{ method: "setMyCommands", payload: input }]);
+  });
+
   it("preserves Telegram error code, retry_after, and a redacted description", async () => {
     const { port } = apiWith([
       {

@@ -28,6 +28,8 @@ export function createBot(env: Bindings): Bot {
   bot.on("chat_join_request", (ctx) =>
     service.join(ctx.chatJoinRequest, { update: { update_id: ctx.update.update_id } }),
   );
+  // Settings-panel buttons (`c:`) come before the quiz buttons' catch-all.
+  bot.callbackQuery(/^c:/, (ctx) => admin.callback(ctx.callbackQuery));
   bot.on("callback_query", (ctx) => service.callback(ctx.callbackQuery));
   bot.on("edited_message", (ctx) => service.moderate(ctx.editedMessage, { edited: true }));
   // Join service messages are cleaned up, never filtered or treated as commands.
@@ -36,10 +38,20 @@ export function createBot(env: Bindings): Bot {
   bot.on("message", async (ctx, next) => {
     if (!(await service.moderate(ctx.msg))) await next();
   });
+  // The group chosen with the `request_chat` button of /verify_groups.
+  bot.on("message:chat_shared", (ctx) => admin.chatShared(ctx.msg));
   for (const name of ADMIN_COMMANDS) {
     bot.command(name, (ctx) => admin.handle(ctx.msg, { name, args: ctx.match.trim() }));
   }
-  bot.command(["start", "help"], (ctx) => service.start(ctx.msg));
+  // `/start` follows the user's progress: a group deep link, then an applicant's verification step
+  // or recent approval, then the group they are managing, then the general greeting.
+  bot.command("start", async (ctx) => {
+    const payload = ctx.match.trim();
+    if (payload && (await admin.open(ctx.msg, payload))) return;
+    if (await service.start(ctx.msg)) return;
+    await admin.welcome(ctx.msg);
+  });
+  bot.command("help", (ctx) => admin.welcome(ctx.msg));
 
   return bot;
 }

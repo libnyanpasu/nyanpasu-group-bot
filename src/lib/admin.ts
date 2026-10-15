@@ -1,14 +1,35 @@
 import type {
   BotApi,
+  CallbackQuery,
+  Chat,
   Config,
   ContentPack,
   Language,
   Member,
   Message,
+  MessageBody,
   Repository,
+  SendBody,
   User,
 } from "../types.js";
 import { adminMessage, type AdminMessageKey } from "./admin-i18n.js";
+import {
+  ADMIN_TARGET_TTL_MS,
+  GROUP_PICKER_REQUEST_ID,
+  decodeGroupRef,
+  encodeGroupRef,
+} from "./admin-target.js";
+import {
+  type BotPermissions,
+  hintsText,
+  cycleSetting,
+  nextSteps,
+  panelKeyboard,
+  parsePanelCallback,
+} from "./admin-panel.js";
+import { apiError } from "./api-error.js";
+import { COMMAND_LANGUAGES, MANAGER_COMMANDS, PRIVATE_COMMANDS, botCommands } from "./commands.js";
+import { detectLanguage, t } from "./i18n.js";
 import { DEFAULT_CONFIG, validateConfig, validateContentPack } from "./quiz.js";
 import {
   DEFAULT_BLOCKLIST_ID,
@@ -21,6 +42,7 @@ import {
 /** Commands the admin module handles; grammY's `bot.command` routes them and parses arguments. */
 export const ADMIN_COMMANDS = [
   "verify_help",
+  "verify_groups",
   "verify_status",
   "verify_enable",
   "verify_disable",
@@ -38,11 +60,31 @@ export interface AdminCommand {
 
 type AdminApi = Pick<
   BotApi,
-  "sendMessage" | "getMe" | "getChat" | "getChatMember" | "createChatInviteLink"
+  | "sendMessage"
+  | "editMessageText"
+  | "answerCallbackQuery"
+  | "setMyCommands"
+  | "getMe"
+  | "getChat"
+  | "getChatMember"
+  | "createChatInviteLink"
 >;
+
+/** A reason an action cannot proceed, as the message key and values to tell the administrator. */
+type Blocker = { key: AdminMessageKey; values?: Record<string, string | number> };
 interface AdminOptions {
   api: AdminApi;
-  repository: Pick<Repository, "getConfig" | "saveConfig" | "getContentPack" | "getBlocklist">;
+  repository: Pick<
+    Repository,
+    | "getConfig"
+    | "saveConfig"
+    | "getContentPack"
+    | "getBlocklist"
+    | "getAdminTarget"
+    | "setAdminTarget"
+    | "clearAdminTarget"
+  >;
+  now?: () => number;
   /** Used for groups that have not set deleteJoinMessages themselves. */
   defaultDeleteJoinMessages?: boolean;
   /** Spam filter settings for groups that have not set their own. */
@@ -115,8 +157,19 @@ function send(
   language: Language,
   key: AdminMessageKey,
   values?: Record<string, string | number>,
+  replyMarkup?: SendBody["reply_markup"],
 ) {
-  return api.sendMessage({ chat_id: chatId, text: adminMessage(language, key, values) });
+  return api.sendMessage({
+    chat_id: chatId,
+    text: adminMessage(language, key, values),
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  });
+}
+
+/** Telegram answers 400/403 when a chat is unknown to the bot or the bot was removed from it. */
+function unreachable(error: unknown): boolean {
+  const { code } = apiError(error);
+  return code === 400 || code === 403;
 }
 
 function packIsUsable(pack: ContentPack | null | undefined): pack is ContentPack {
@@ -126,9 +179,90 @@ function packIsUsable(pack: ContentPack | null | undefined): pack is ContentPack
 export function createAdmin({
   api,
   repository,
+  now = Date.now,
   defaultDeleteJoinMessages = false,
   spamDefaults = DEFAULT_SPAM_SETTINGS,
 }: AdminOptions) {
+  type Access = { status: "ok"; member: Member } | { status: "forbidden" | "unavailable" };
+
+  /** Look up what `userId` may do in `chatId`; the answer is never cached or trusted from input. */
+  async function access(chatId: number, userId: number): Promise<Access> {
+    let member: Member;
+    try {
+      member = await api.getChatMember({ chat_id: chatId, user_id: userId });
+    } catch (error) {
+      if (unreachable(error)) return { status: "unavailable" };
+      throw error;
+    }
+    return isAdmin(member.status, member.can_invite_users)
+      ? { status: "ok", member }
+      : { status: "forbidden" };
+  }
+
+  /** The chat when it is a group or supergroup the bot can reach; null otherwise. */
+  async function groupInfo(chatId: number): Promise<Chat | null> {
+    try {
+      const chat = await api.getChat({ chat_id: chatId });
+      return chat.type === "group" || chat.type === "supergroup" ? chat : null;
+    } catch (error) {
+      if (unreachable(error)) return null;
+      throw error;
+    }
+  }
+
+  /** A "Manage in private chat" deep-link button for replies posted in a group. */
+  async function manageMarkup(
+    chatId: number,
+    language: Language,
+  ): Promise<SendBody["reply_markup"] | undefined> {
+    const ref = encodeGroupRef(chatId);
+    const { username } = await api.getMe();
+    if (!ref || !username) return undefined;
+    return {
+      inline_keyboard: [
+        [
+          {
+            text: adminMessage(language, "manageButton"),
+            url: `https://t.me/${username}?start=${ref}`,
+          },
+        ],
+      ],
+    };
+  }
+
+  /**
+   * Show the management commands in this person's "/" menu while they manage a group, or the
+   * plain private menu when they stop. A display nicety, so a failure never blocks the request.
+   */
+  async function showCommands(userId: number, managing: boolean): Promise<void> {
+    const commands = managing ? MANAGER_COMMANDS : PRIVATE_COMMANDS;
+    try {
+      for (const { code, key } of COMMAND_LANGUAGES) {
+        await api.setMyCommands({
+          commands: botCommands(commands, key),
+          scope: { type: "chat", chat_id: userId },
+          ...(code ? { language_code: code } : {}),
+        });
+      }
+    } catch (error) {
+      console.warn("setMyCommands failed", apiError(error).code);
+    }
+  }
+
+  /** Remember `chatId` as the user's group to manage, after proving they may manage it. */
+  async function selectGroup(userId: number, chatId: number): Promise<Chat | null> {
+    if ((await access(chatId, userId)).status !== "ok") return null;
+    const chat = await groupInfo(chatId);
+    if (!chat) return null;
+    await repository.setAdminTarget(userId, chatId, now());
+    await showCommands(userId, true);
+    return chat;
+  }
+
+  function title(chat: Chat): string {
+    return chat.title?.trim() || String(chat.id);
+  }
+
   /** List bot permissions the spam filter needs but lacks, in the reply language. */
   async function missingSpamPermissions(chatId: number, ban: boolean, language: Language) {
     const me = await api.getMe();
@@ -139,7 +273,319 @@ export function createAdmin({
     return missing.map((key) => adminMessage(language, key));
   }
 
-  return async function handle(message: Message, command: AdminCommand): Promise<void> {
+  async function botPermissions(chatId: number): Promise<BotPermissions> {
+    const me = await api.getMe();
+    const member = await api.getChatMember({ chat_id: chatId, user_id: me.id });
+    return {
+      canApprove: isAdmin(member.status, member.can_invite_users),
+      canDelete: canDeleteMessages(member),
+      canRestrict: canRestrictMembers(member),
+    };
+  }
+
+  /** Why join verification cannot be enabled for this group yet, or null when it can. */
+  async function enableBlocker(chatId: number, config: Config): Promise<Blocker | null> {
+    const pack = await repository.getContentPack(config.contentId);
+    if (!packIsUsable(pack)) return { key: "contentRequired" };
+    const configError = validateConfig(config);
+    if (configError) return { key: "invalidConfig", values: { error: configError } };
+    if (!(await botPermissions(chatId)).canApprove) return { key: "botNeedsAdmin" };
+    return null;
+  }
+
+  /** Create the approval-only invite link, or say what is missing first. */
+  async function createInvite(chatId: number, config: Config): Promise<{ link: string } | Blocker> {
+    const pack = await repository.getContentPack(config.contentId);
+    if (!config.enabled || !packIsUsable(pack)) return { key: "inviteNeedsEnabled" };
+    if (!(await botPermissions(chatId)).canApprove) return { key: "botNeedsAdmin" };
+    const invite = await api.createChatInviteLink({
+      chat_id: chatId,
+      name: "verification requests",
+      creates_join_request: true,
+    });
+    return { link: invite.invite_link };
+  }
+
+  /** The "Next steps" block for a group, fetching what the caller does not already have. */
+  async function hintsFor(
+    chatId: number,
+    config: Config,
+    language: Language,
+    privateChat: boolean,
+    known: { pack?: ContentPack | null; bot?: BotPermissions } = {},
+  ): Promise<string> {
+    const pack =
+      known.pack !== undefined ? known.pack : await repository.getContentPack(config.contentId);
+    const bot = known.bot ?? (await botPermissions(chatId));
+    return hintsText(
+      language,
+      nextSteps({
+        config,
+        bot,
+        packUsable: packIsUsable(pack),
+        privateChat,
+        defaultDeleteJoinMessages,
+        spamDefaults,
+      }),
+    );
+  }
+
+  /** The settings panel for a group: status text, next steps and the inline keyboard. */
+  async function panelView(
+    chat: Chat,
+    config: Config,
+    language: Language,
+  ): Promise<Required<MessageBody>> {
+    const groupRef = encodeGroupRef(chat.id) ?? "";
+    return {
+      text: adminMessage(language, "panel", {
+        title: title(chat),
+        groupId: chat.id,
+        enabled: adminMessage(language, config.enabled ? "enabled" : "disabled"),
+        config: configText(config, language, defaultDeleteJoinMessages, spamDefaults),
+        hints: await hintsFor(chat.id, config, language, true),
+      }),
+      reply_markup: {
+        inline_keyboard: groupRef
+          ? panelKeyboard({
+              language,
+              config,
+              groupRef,
+              defaultDeleteJoinMessages,
+              spamDefaults,
+            })
+          : [],
+      },
+    };
+  }
+
+  async function loadConfig(chatId: number): Promise<Config> {
+    return { ...DEFAULT_CONFIG, ...(await repository.getConfig(chatId)) };
+  }
+
+  /** Post the settings panel for `chat` into the administrator's private chat, in the group's language. */
+  async function sendPanel(privateChatId: number, chat: Chat): Promise<void> {
+    const config = await loadConfig(chat.id);
+    const view = await panelView(chat, config, groupLanguage(config));
+    await api.sendMessage({ chat_id: privateChatId, ...view });
+  }
+
+  /** A settings-panel button tap. Everything in the callback is untrusted and re-verified. */
+  async function callback(query: CallbackQuery): Promise<void> {
+    const fallback = userLanguage(query.from, "cn");
+    // Telegram limits a toast to 200 characters.
+    const answer = (language: Language, blocker: Blocker) =>
+      api.answerCallbackQuery({
+        callback_query_id: query.id,
+        text: adminMessage(language, blocker.key, blocker.values).slice(0, 200),
+      });
+    const parsed = parsePanelCallback(query.data);
+    const groupId = parsed ? decodeGroupRef(parsed.groupRef) : null;
+    const message = query.message;
+    if (!parsed || groupId === null) {
+      await answer(fallback, { key: "toastInvalid" });
+      return;
+    }
+    if (!message) {
+      await answer(fallback, { key: "toastStale" });
+      return;
+    }
+    if (message.chat.type !== "private" || message.chat.id !== query.from.id) {
+      await answer(fallback, { key: "toastInvalid" });
+      return;
+    }
+
+    const requester = await access(groupId, query.from.id);
+    const chat = requester.status === "ok" ? await groupInfo(groupId) : null;
+    if (requester.status === "forbidden") {
+      await answer(fallback, { key: "toastDenied" });
+      return;
+    }
+    if (!chat) {
+      await answer(fallback, { key: "targetUnavailable" });
+      return;
+    }
+
+    const config = await loadConfig(groupId);
+    // The panel speaks the group's language, like every other settings reply.
+    const language = groupLanguage(config);
+    let updated = config;
+    let toast: Blocker = { key: "toastUpdated" };
+    const fail = (blocker: Blocker) => {
+      toast = blocker.key.startsWith("toast")
+        ? blocker
+        : {
+            key: "toastFailed",
+            values: { error: adminMessage(language, blocker.key, blocker.values) },
+          };
+    };
+    if (parsed.action === "en") {
+      if (config.enabled) updated = { ...config, enabled: false };
+      else {
+        const blocker = await enableBlocker(groupId, config);
+        if (blocker) fail(blocker);
+        else updated = { ...config, enabled: true };
+      }
+    } else if (parsed.action === "iv") {
+      const result = await createInvite(groupId, config);
+      if ("link" in result) {
+        await send(api, message.chat.id, language, "inviteCreated", { inviteLink: result.link });
+        toast = { key: "toastInviteSent" };
+      } else fail(result);
+    } else if (parsed.action !== "rf") {
+      const candidate = cycleSetting(config, parsed.action);
+      const error = validateConfig(candidate);
+      if (error) fail({ key: "invalidConfigUpdate", values: { error } });
+      else updated = candidate;
+    }
+    if (updated !== config) await repository.saveConfig(groupId, updated);
+    await repository.setAdminTarget(query.from.id, groupId, now());
+    await answer(groupLanguage(updated), toast);
+
+    try {
+      await api.editMessageText({
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        ...(await panelView(chat, updated, groupLanguage(updated))),
+      });
+    } catch (error) {
+      const { code, description } = apiError(error);
+      if (!(code === 400 && /message is not modified/i.test(description ?? ""))) throw error;
+    }
+  }
+
+  /** Offer Telegram's group picker, or drop the saved selection with `clear`. */
+  async function groups(message: Message, args: string): Promise<void> {
+    const sourceChatId = message.chat.id;
+    if (message.chat.type !== "private") {
+      const language = groupLanguage(await repository.getConfig(sourceChatId));
+      await send(
+        api,
+        sourceChatId,
+        language,
+        "groupsPrivateOnly",
+        undefined,
+        await manageMarkup(sourceChatId, language),
+      );
+      return;
+    }
+    const language = userLanguage(message.from, "cn");
+    const userId = message.from?.id;
+    if (userId == null) {
+      await send(api, sourceChatId, language, "senderUnknown");
+      return;
+    }
+    if (args.toLowerCase() === "clear") {
+      await repository.clearAdminTarget(userId);
+      await showCommands(userId, false);
+      await send(api, sourceChatId, language, "groupsCleared", undefined, {
+        remove_keyboard: true,
+      });
+      return;
+    }
+    let text = adminMessage(language, "groupsPrompt");
+    const savedId = await repository.getAdminTarget(userId, now() - ADMIN_TARGET_TTL_MS);
+    if (savedId !== null) {
+      const saved = await groupInfo(savedId);
+      text += `\n${adminMessage(language, "groupsCurrent", {
+        title: saved ? title(saved) : String(savedId),
+        groupId: savedId,
+      })}`;
+    }
+    await api.sendMessage({
+      chat_id: sourceChatId,
+      text,
+      reply_markup: {
+        keyboard: [
+          [
+            {
+              text: adminMessage(language, "groupsButton"),
+              request_chat: {
+                request_id: GROUP_PICKER_REQUEST_ID,
+                chat_is_channel: false,
+                bot_is_member: true,
+                user_administrator_rights: { can_invite_users: true },
+              },
+            },
+          ],
+        ],
+        resize_keyboard: true,
+        one_time_keyboard: true,
+      },
+    });
+  }
+
+  /** The user picked a group in Telegram's chooser; the shared ID is untrusted until verified. */
+  async function chatShared(message: Message): Promise<void> {
+    const shared = message.chat_shared;
+    const userId = message.from?.id;
+    if (message.chat.type !== "private" || userId == null) return;
+    if (shared?.request_id !== GROUP_PICKER_REQUEST_ID) return;
+    const language = userLanguage(message.from, "cn");
+    const chat = await selectGroup(userId, shared.chat_id);
+    if (!chat) {
+      await send(api, message.chat.id, language, "groupSelectFailed", undefined, {
+        remove_keyboard: true,
+      });
+      return;
+    }
+    await send(
+      api,
+      message.chat.id,
+      language,
+      "groupSelected",
+      { title: title(chat), groupId: chat.id },
+      { remove_keyboard: true },
+    );
+    await sendPanel(message.chat.id, chat);
+  }
+
+  /**
+   * The private-chat greeting for someone with nothing in progress: the group they are
+   * managing when they have a live selection, otherwise how to join and how to manage.
+   */
+  async function welcome(message: Message): Promise<void> {
+    const userId = message.from?.id;
+    if (message.chat.type !== "private" || userId == null) return;
+    const language = detectLanguage(message.from?.language_code);
+    // A lookup only; greeting someone does not count as using the selection.
+    const saved = await repository.getAdminTarget(userId, now() - ADMIN_TARGET_TTL_MS);
+    if (saved !== null && (await access(saved, userId)).status === "ok") {
+      const chat = await groupInfo(saved);
+      if (chat) {
+        await api.sendMessage({
+          chat_id: message.chat.id,
+          text: t(language, "startManaging", { title: title(chat) }),
+        });
+        return;
+      }
+    }
+    await api.sendMessage({
+      chat_id: message.chat.id,
+      text: `${t(language, "startHelp")}\n\n${t(language, "startAdmin")}`,
+    });
+  }
+
+  /** `/start s<n>` or `g<n>`: a deep link from a group's "Manage in private chat" button. */
+  async function open(message: Message, ref: string): Promise<boolean> {
+    const groupId = decodeGroupRef(ref);
+    const userId = message.from?.id;
+    if (groupId === null || message.chat.type !== "private" || userId == null) return false;
+    const language = userLanguage(message.from, "cn");
+    const chat = await selectGroup(userId, groupId);
+    if (!chat) {
+      await api.sendMessage({ chat_id: message.chat.id, text: t(language, "startNotAdmin") });
+      return true;
+    }
+    await send(api, message.chat.id, language, "groupSelected", {
+      title: title(chat),
+      groupId: chat.id,
+    });
+    await sendPanel(message.chat.id, chat);
+    return true;
+  }
+
+  async function handle(message: Message, command: AdminCommand): Promise<void> {
     const sourceChatId = message.chat.id;
     const privateChat = message.chat.type === "private";
     const groupChat = message.chat.type === "group" || message.chat.type === "supergroup";
@@ -153,9 +599,21 @@ export function createAdmin({
       return;
     }
 
+    if (command.name === "verify_groups") {
+      await groups(message, command.args);
+      return;
+    }
+
     if (groupChat && command.name === "verify_invite") {
       if (message.sender_chat) {
-        await send(api, sourceChatId, "cn", "anonymousAdmin");
+        await send(
+          api,
+          sourceChatId,
+          "cn",
+          "anonymousAdmin",
+          undefined,
+          await manageMarkup(sourceChatId, "cn"),
+        );
         return;
       }
       const senderId = message.from?.id;
@@ -163,33 +621,50 @@ export function createAdmin({
         await send(api, sourceChatId, "cn", "senderUnknown");
         return;
       }
-      const groupMember = await api.getChatMember({ chat_id: sourceChatId, user_id: senderId });
-      const storedConfig = await repository.getConfig(sourceChatId);
-      const language = groupLanguage(storedConfig);
-      if (!isAdmin(groupMember.status, groupMember.can_invite_users)) {
+      const groupAccess = await access(sourceChatId, senderId);
+      const language = groupLanguage(await repository.getConfig(sourceChatId));
+      if (groupAccess.status !== "ok") {
         await send(api, sourceChatId, language, "adminRequired");
         return;
       }
-      await send(api, sourceChatId, language, "invitePrivateOnly", { groupId: sourceChatId });
+      await send(
+        api,
+        sourceChatId,
+        language,
+        "invitePrivateOnly",
+        undefined,
+        await manageMarkup(sourceChatId, language),
+      );
       return;
     }
 
+    const senderId = message.from?.id;
     let chatId = sourceChatId;
     let args = command.args;
+    let selected = false;
+    let targetChat: Chat | null = null;
     if (privateChat) {
+      if (senderId == null) {
+        await send(api, sourceChatId, userLanguage(message.from, "cn"), "senderUnknown");
+        return;
+      }
       const target = /^(-?\d+)(?:\s+([\s\S]*))?$/.exec(args);
-      const targetId = target ? Number(target[1]) : Number.NaN;
-      if (!target || !Number.isSafeInteger(targetId)) {
+      if (target) {
+        chatId = Number(target[1]);
+        args = target[2]?.trim() ?? "";
+      } else {
+        const saved = await repository.getAdminTarget(senderId, now() - ADMIN_TARGET_TTL_MS);
+        if (saved === null) {
+          await send(api, sourceChatId, userLanguage(message.from, "cn"), "targetRequired");
+          return;
+        }
+        chatId = saved;
+        selected = true;
+      }
+      if (!Number.isSafeInteger(chatId)) {
         await send(api, sourceChatId, userLanguage(message.from, "cn"), "targetRequired");
         return;
       }
-      const targetChat = await api.getChat({ chat_id: targetId });
-      if (targetChat.type !== "group" && targetChat.type !== "supergroup") {
-        await send(api, sourceChatId, userLanguage(message.from, "cn"), "targetNotGroup");
-        return;
-      }
-      chatId = targetId;
-      args = target[2]?.trim() ?? "";
     }
 
     const storedConfig = await repository.getConfig(chatId);
@@ -202,31 +677,58 @@ export function createAdmin({
         : configuredLanguage;
 
     if (message.sender_chat) {
-      await send(api, sourceChatId, responseLanguage, "anonymousAdmin");
+      await send(
+        api,
+        sourceChatId,
+        responseLanguage,
+        "anonymousAdmin",
+        undefined,
+        await manageMarkup(sourceChatId, responseLanguage),
+      );
       return;
     }
 
-    const senderId = message.from?.id;
     if (senderId == null) {
       await send(api, sourceChatId, responseLanguage, "senderUnknown");
       return;
     }
 
-    const member = await api.getChatMember({ chat_id: chatId, user_id: senderId });
-    if (!isAdmin(member.status, member.can_invite_users)) {
+    const requester = await access(chatId, senderId);
+    if (requester.status === "unavailable") {
+      // A stale selection (bot removed, group deleted) is dropped instead of failing forever.
+      if (selected) await repository.clearAdminTarget(senderId);
+      await send(api, sourceChatId, userLanguage(message.from, "cn"), "targetUnavailable");
+      return;
+    }
+    if (requester.status !== "ok") {
       await send(api, sourceChatId, responseLanguage, "adminRequired");
       return;
     }
+    if (privateChat) {
+      targetChat = await groupInfo(chatId);
+      if (!targetChat) {
+        await send(api, sourceChatId, userLanguage(message.from, "cn"), "targetNotGroup");
+        return;
+      }
+      // Using a group keeps the selection alive; the 24 hours count from the last command.
+      await repository.setAdminTarget(senderId, chatId, now());
+    }
 
     if (command.name === "verify_help") {
-      await send(api, sourceChatId, responseLanguage, privateChat ? "privateHelp" : "help");
+      await send(
+        api,
+        sourceChatId,
+        responseLanguage,
+        privateChat ? "privateHelp" : "help",
+        undefined,
+        privateChat ? undefined : await manageMarkup(chatId, responseLanguage),
+      );
       return;
     }
 
     if (command.name === "verify_status") {
-      const me = await api.getMe();
-      const botMember = await api.getChatMember({ chat_id: chatId, user_id: me.id });
-      const botCanApprove = isAdmin(botMember.status, botMember.can_invite_users);
+      const bot = await botPermissions(chatId);
+      const botCanApprove = bot.canApprove;
       const pack = await repository.getContentPack(config.contentId);
       const blocklist = await repository.getBlocklist(DEFAULT_BLOCKLIST_ID);
       const text = adminMessage(responseLanguage, "status", {
@@ -248,30 +750,29 @@ export function createAdmin({
             : adminMessage(responseLanguage, "noContent"),
         config: configText(config, responseLanguage, defaultDeleteJoinMessages, spamDefaults),
       });
-      await api.sendMessage({ chat_id: sourceChatId, text });
+      await api.sendMessage({
+        chat_id: sourceChatId,
+        text: privateChat
+          ? text + (await hintsFor(chatId, config, responseLanguage, true, { pack, bot }))
+          : text,
+        ...(privateChat ? {} : { reply_markup: await manageMarkup(chatId, responseLanguage) }),
+      });
       return;
     }
 
     if (command.name === "verify_enable") {
-      const pack = await repository.getContentPack(config.contentId);
-      if (!packIsUsable(pack)) {
-        await send(api, sourceChatId, responseLanguage, "contentRequired");
-        return;
-      }
-      const configError = validateConfig(config);
-      if (configError) {
-        await send(api, sourceChatId, responseLanguage, "invalidConfig", { error: configError });
-        return;
-      }
-      const me = await api.getMe();
-      const botMember = await api.getChatMember({ chat_id: chatId, user_id: me.id });
-      if (!isAdmin(botMember.status, botMember.can_invite_users)) {
-        await send(api, sourceChatId, responseLanguage, "botNeedsAdmin");
+      const blocker = await enableBlocker(chatId, config);
+      if (blocker) {
+        await send(api, sourceChatId, responseLanguage, blocker.key, blocker.values);
         return;
       }
       config.enabled = true;
       await repository.saveConfig(chatId, config);
-      await send(api, sourceChatId, responseLanguage, "enableSuccess");
+      const text = adminMessage(responseLanguage, "enableSuccess");
+      await api.sendMessage({
+        chat_id: sourceChatId,
+        text: privateChat ? text + (await hintsFor(chatId, config, responseLanguage, true)) : text,
+      });
       return;
     }
 
@@ -284,9 +785,17 @@ export function createAdmin({
 
     if (command.name === "verify_config") {
       if (!args) {
+        if (privateChat && targetChat) {
+          await api.sendMessage({
+            chat_id: sourceChatId,
+            ...(await panelView(targetChat, config, configuredLanguage)),
+          });
+          return;
+        }
         await api.sendMessage({
           chat_id: sourceChatId,
           text: configText(config, responseLanguage, defaultDeleteJoinMessages, spamDefaults),
+          ...(privateChat ? {} : { reply_markup: await manageMarkup(chatId, responseLanguage) }),
         });
         return;
       }
@@ -372,35 +881,21 @@ export function createAdmin({
         if (missing.length)
           text += `\n${adminMessage(newLanguage, "botNeedsSpamPermissions", { permissions: missing.join(", ") })}`;
       }
+      if (privateChat) text += await hintsFor(chatId, next, newLanguage, true);
       await api.sendMessage({ chat_id: sourceChatId, text });
       return;
     }
 
     if (command.name === "verify_invite") {
-      if (!privateChat) {
-        await send(api, sourceChatId, responseLanguage, "invitePrivateOnly", { groupId: chatId });
-        return;
-      }
-      const pack = await repository.getContentPack(config.contentId);
-      if (!config.enabled || !packIsUsable(pack)) {
-        await send(api, sourceChatId, responseLanguage, "inviteNeedsEnabled");
-        return;
-      }
-      const me = await api.getMe();
-      const botMember = await api.getChatMember({ chat_id: chatId, user_id: me.id });
-      if (!isAdmin(botMember.status, botMember.can_invite_users)) {
-        await send(api, sourceChatId, responseLanguage, "botNeedsAdmin");
-        return;
-      }
-      const invite = await api.createChatInviteLink({
-        chat_id: chatId,
-        name: "verification requests",
-        creates_join_request: true,
-      });
-      await send(api, sourceChatId, responseLanguage, "inviteCreated", {
-        inviteLink: invite.invite_link,
-      });
+      const result = await createInvite(chatId, config);
+      if ("link" in result)
+        await send(api, sourceChatId, responseLanguage, "inviteCreated", {
+          inviteLink: result.link,
+        });
+      else await send(api, sourceChatId, responseLanguage, result.key, result.values);
       return;
     }
-  };
+  }
+
+  return { handle, chatShared, open, callback, welcome };
 }

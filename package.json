@@ -23,7 +23,8 @@
     "content:list": "node scripts/content-cli.mjs list",
     "blocklist:build": "node scripts/blocklist-build.mjs",
     "webhook:set": "node --env-file-if-exists=.dev.vars scripts/telegram-webhook.ts set",
-    "webhook:info": "node --env-file-if-exists=.dev.vars scripts/telegram-webhook.ts info"
+    "webhook:info": "node --env-file-if-exists=.dev.vars scripts/telegram-webhook.ts info",
+    "commands:set": "node --env-file-if-exists=.dev.vars scripts/telegram-commands.ts"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.2",
