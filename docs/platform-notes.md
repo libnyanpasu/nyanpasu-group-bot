@@ -40,7 +40,7 @@ Workers Free has per-invocation resource limits, including a 50-subrequest limit
 
 ## Deployment
 
-Build first, apply D1 migrations explicitly, deploy the Worker, set production secrets, then register the HTTPS `/webhook` URL with Telegram and publish the command menus with `pnpm commands:set`. Deployment does not run migrations and never writes content: question packs reach D1 through `pnpm content:push --remote` from the gitignored `private-content/` checkout. On subsequent changes, generate/review migrations before applying them; content-only changes need a content push and no redeploy.
+`pnpm run deploy` applies pending remote D1 migrations without Wrangler's interactive confirmation, then deploys the Worker; it does not run `pnpm check`. D1 may be unavailable while migrations run. A failed migration stops deployment; a successful migration remains applied if the Worker deployment later fails, so schema changes must remain compatible with the currently deployed code. Use an expand-and-contract rollout for incompatible changes. Set production secrets, then register the HTTPS `/webhook` URL with Telegram and publish the command menus with `pnpm commands:set`. Deployment never writes question content: packs reach D1 through `pnpm content:push --remote` from the gitignored `private-content/` checkout. Generate and review migrations before deployment; content-only changes need a content push and no redeploy.
 
 Public CI does not clone the private content checkout; schema sync is skipped when it is absent, and the Worker bundle never contains question content. `dist/` and `.wrangler/` hold build output only, and `private-content/` stays ignored. No automatic session retention cleanup is currently configured.
 

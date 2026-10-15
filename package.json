@@ -14,7 +14,7 @@
     "content:schemas:check": "node scripts/sync-content-schemas.mjs --check",
     "test": "vitest run",
     "check": "pnpm typecheck && pnpm typecheck:tests && pnpm lint && pnpm fmt:check && pnpm content:schemas:check && pnpm test && pnpm build && wrangler deploy --dry-run --outdir .wrangler/dry-run",
-    "deploy": "pnpm check && wrangler deploy",
+    "deploy": "CI=true pnpm db:migrate:remote && wrangler deploy",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply nyanpasu-group-bot --local",
     "db:migrate:remote": "wrangler d1 migrations apply nyanpasu-group-bot --remote",
