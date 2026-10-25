@@ -177,7 +177,7 @@ importers:
         version: 1.46.0(supports-color@10.2.2)
       hono:
         specifier: ^4.13.13
-        version: 4.13.13
+        version: 4.13.14
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^5.20261010.1
@@ -1608,8 +1608,8 @@ packages:
     resolution: {integrity: sha512-/8Qw+iisrUdOMk+p2mjEHouMm/BBdBEN1DHh16wiTpRUZkxDG3PxexdjCvR+wvK3LWPdrEvnQbdrwpU954sPhg==}
     engines: {node: ^12.20.0 || >=14.13.1}
 
-  hono@4.13.13:
-    resolution: {integrity: sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA==}
+  hono@4.13.14:
+    resolution: {integrity: sha512-yhRLQ21U6qa9Hsu2N7Qcbh8tE+WKEcoErjIo56LeSGiGXGp9sA7UpE86Ui9uexb61KakiGwuHMn2QdV7w6i6kQ==}
     engines: {node: '>=16.9.0'}
 
   json-schema-traverse@1.0.0:
@@ -2803,7 +2803,7 @@ snapshots:
       - encoding
       - supports-color
 
-  hono@4.13.13: {}
+  hono@4.13.14: {}
 
   json-schema-traverse@1.0.0: {}
 
